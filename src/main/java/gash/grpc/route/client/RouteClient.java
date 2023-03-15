@@ -8,7 +8,7 @@ import route.Route;
 import route.RouteServiceGrpc;
 
 /**
- * copyright 2021, gash
+ * copyright 2023, gash
  *
  * Gash licenses this file to you under the Apache License, version 2.0 (the
  * "License"); you may not use this file except in compliance with the License.
@@ -24,12 +24,17 @@ import route.RouteServiceGrpc;
  */
 
 public class RouteClient {
+	// when using server.conf
 	private static long clientID = 501;
-	private static int port = 2345;
+	private static int port = 3036;
 
-	private static final Route constructMessage(int mID, String path, String payload) {
+	// private static long clientID = 100;
+	// private static int port = 2100;
+
+	private static final Route constructMessage(int mID, int toID, String path, String payload) {
 		Route.Builder bld = Route.newBuilder();
 		bld.setId(mID);
+		bld.setDestination(toID);
 		bld.setOrigin(RouteClient.clientID);
 		bld.setPath(path);
 
@@ -38,25 +43,29 @@ public class RouteClient {
 
 		return bld.build();
 	}
-	
+
 	private static final void response(Route reply) {
-		// TODO handle the reply/response from the server	
+		// TODO handle the reply/response from the server
 		var payload = new String(reply.getPayload().toByteArray());
 		System.out.println("reply: " + reply.getId() + ", from: " + reply.getOrigin() + ", payload: " + payload);
 	}
-	
+
 	public static void main(String[] args) {
-		ManagedChannel ch = ManagedChannelBuilder.forAddress("localhost", RouteClient.port).usePlaintext().build();
+		RouteClient.run(RouteClient.port, 3038, 1);
+	}
+
+	public static void run(int linkPort, int destinationId, int I) {
+		ManagedChannel ch = ManagedChannelBuilder.forAddress("localhost", linkPort).usePlaintext().build();
 		RouteServiceGrpc.RouteServiceBlockingStub stub = RouteServiceGrpc.newBlockingStub(ch);
 
-		final int I = 10;
 		for (int i = 0; i < I; i++) {
-			var msg = RouteClient.constructMessage(i, "/to/somewhere", "hello");
-			
+			// simulate different type of messages that can be sent
+			var path = (i % 5 == 0) ? "/manage/something" : "/to/somewhere";
+			var msg = RouteClient.constructMessage(i, destinationId, path, "hello " + i);
+
 			// blocking!
 			var r = stub.request(msg);
 			response(r);
-			
 		}
 
 		ch.shutdown();

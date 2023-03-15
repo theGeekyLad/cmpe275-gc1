@@ -3,14 +3,18 @@ package gash.grpc.route.server;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Properties;
 
 import com.google.protobuf.ByteString;
 
+import gash.grpc.route.client.RouteClient;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 import io.grpc.stub.StreamObserver;
+
+import route.RouteServiceGrpc;
 import route.RouteServiceGrpc.RouteServiceImplBase;
 
 /**
@@ -30,12 +34,6 @@ import route.RouteServiceGrpc.RouteServiceImplBase;
  */
 public class RouteServerImpl extends RouteServiceImplBase {
 	private Server svr;
-
-	// queue/container is just a placeholder
-	// an array is not MT-safe!
-	private ArrayList<Work> _q = new ArrayList<Work>();
-
-	private Worker _worker;
 
 	/**
 	 * Configuration of the server's identity, port, and role
@@ -64,37 +62,7 @@ public class RouteServerImpl extends RouteServiceImplBase {
 
 	protected ByteString ack(route.Route msg) {
 		// TODO complete processing
-		final String blank = "Yup";
-		byte[] raw = blank.getBytes();
-
-		return ByteString.copyFrom(raw);
-	}
-
-	/**
-	 * TODO add impl
-	 * 
-	 * @return
-	 */
-	Work checkForWork() {
-		// TODO stuff
-		return null;
-	}
-
-	/**
-	 * TODO refactor this!
-	 * 
-	 * @param path
-	 * @param payload
-	 * @return
-	 */
-	protected ByteString process(route.Route msg) {
-
-		// TODO placeholder for CPU/Mem intensive work
-		String content = new String(msg.getPayload().toByteArray());
-		System.out.println("-- got: " + msg.getOrigin() + ", path: " + msg.getPath() + ", with: " + content);
-
-		// TODO complete processing
-		final String blank = "blank";
+		final String blank = "accepted";
 		byte[] raw = blank.getBytes();
 
 		return ByteString.copyFrom(raw);
@@ -106,7 +74,8 @@ public class RouteServerImpl extends RouteServiceImplBase {
 		String path = args[0];
 		try {
 			Properties conf = RouteServerImpl.getConfiguration(new File(path));
-			RouteServer.configure(conf);
+			Engine.configure(conf);
+			Engine.getConf();
 
 			/* Similar to the socket, waiting for a connection */
 			final RouteServerImpl impl = new RouteServerImpl();
@@ -120,10 +89,9 @@ public class RouteServerImpl extends RouteServiceImplBase {
 	}
 
 	private void start() throws Exception {
-		svr = ServerBuilder.forPort(RouteServer.getInstance().getServerPort()).addService(new RouteServerImpl())
-				.build();
+		svr = ServerBuilder.forPort(Engine.getInstance().getServerPort()).addService(new RouteServerImpl()).build();
 
-		System.out.println("-- starting server");
+		Engine.logger.info(String.format("Hello! I am %s running at %d ...", Engine.getInstance().serverName, Engine.getInstance().getServerPort()));
 		svr.start();
 
 		Runtime.getRuntime().addShutdownHook(new Thread() {
@@ -153,6 +121,7 @@ public class RouteServerImpl extends RouteServiceImplBase {
 	 */
 	@Override
 	public void request(route.Route request, StreamObserver<route.Route> responseObserver) {
+		Engine.logger.info("\n\n\tServer " + Engine.getInstance().getServerID() + " received a message.");
 
 		// TODO refactor to use RouteServer to isolate implementation from
 		// transportation
@@ -163,13 +132,19 @@ public class RouteServerImpl extends RouteServiceImplBase {
 
 			// delay work
 			var w = new Work(request, responseObserver);
-			_q.add(w);
+			if (MgmtWorker.isPriority(request))
+				Engine.getInstance().mgmtQueue.add(w);
+			else
+				Engine.getInstance().workQueue.add(w);
+
+			if (Engine.logger.isDebugEnabled())
+				Engine.logger.debug("request() qsize = " + Engine.getInstance().workQueue.size());
 
 			ack = route.Route.newBuilder();
 
 			// routing/header information
-			ack.setId(RouteServer.getInstance().getNextMessageID());
-			ack.setOrigin(RouteServer.getInstance().getServerID());
+			ack.setId(Engine.getInstance().getNextMessageID());
+			ack.setOrigin(Engine.getInstance().getServerID());
 			ack.setDestination(request.getOrigin());
 			ack.setPath(request.getPath());
 
@@ -182,6 +157,15 @@ public class RouteServerImpl extends RouteServiceImplBase {
 
 		route.Route rtn = ack.build();
 		responseObserver.onNext(rtn);
+
+		if (Engine.getInstance().getServerID() == request.getDestination())
+			Engine.logger.info("\n\n\tThe message is for me!");
+		else {
+			Engine.logger.info("\n\n\tForwarding the message ...");
+			Link link = Engine.getInstance().links.get(0);
+			RouteClient.run(link.getPort(), (int) request.getDestination(), 1);
+		}
+
 		responseObserver.onCompleted();
 	}
 }
