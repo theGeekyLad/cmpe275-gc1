@@ -5,16 +5,14 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.Properties;
 
-import com.google.protobuf.ByteString;
-
 import gash.grpc.route.client.RouteClient;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 import io.grpc.stub.StreamObserver;
 
-import route.RouteServiceGrpc;
+import org.thegeekylad.ServerManager;
+import org.thegeekylad.util.constants.MessageType;
+import route.Route;
 import route.RouteServiceGrpc.RouteServiceImplBase;
 
 /**
@@ -34,6 +32,12 @@ import route.RouteServiceGrpc.RouteServiceImplBase;
  */
 public class RouteServerImpl extends RouteServiceImplBase {
 	private Server svr;
+
+	private ServerManager manager;
+
+	public RouteServerImpl() {
+		manager = new ServerManager(this);
+	}
 
 	/**
 	 * Configuration of the server's identity, port, and role
@@ -60,27 +64,59 @@ public class RouteServerImpl extends RouteServiceImplBase {
 		return rtn;
 	}
 
-	protected ByteString ack(route.Route msg) {
-		// TODO complete processing
-		final String blank = "accepted";
-		byte[] raw = blank.getBytes();
-
-		return ByteString.copyFrom(raw);
+	private static boolean isTypeServer() {
+		return Engine.getInstance().serverRole.equals(Engine.ServerType.SERVER.name());
 	}
 
 	public static void main(String[] args) throws Exception {
 		// TODO check args!
 
-		String path = args[0];
+		RouteServerImpl routeServer = new RouteServerImpl();
+		routeServer.run(args[0]);
+	}
+
+	public void run(String path) throws Exception {
+		if (path.endsWith(",")) path = path.substring(0, path.length() - 1);
+
 		try {
 			Properties conf = RouteServerImpl.getConfiguration(new File(path));
 			Engine.configure(conf);
-			Engine.getConf();
+//			Engine.getConf();
+
+			///////////////////////////////////////////////////////////////////
+			// do client stuff if client
+//			if (!isTypeServer()) {
+//				JSONObject message = new JSONObject(args[1]);
+//
+//				Route route = Route.newBuilder()
+//						.setId(Engine.getInstance().getNextMessageID())
+//						.setOrigin(message.getInt("origin"))
+//						.setDestination(message.getInt("destination"))
+//						.setPath(String.valueOf(Engine.getInstance().getServerPort()))
+//						.setPayload(ByteString.copyFrom(message.getString("payload").getBytes()))
+//						.build();
+//
+//				Link link = Engine.getInstance().links.get(0);
+//				RouteClient.run(link.getPort(), route);
+//
+//				Engine.log("Message injected into ring.");
+//			}
+			///////////////////////////////////////////////////////////////////
+
+			Engine.logDivider();
+			Engine.log("" + Engine.getInstance().serverName.toUpperCase());
+			Engine.logDivider();
+			System.out.println("Initialized.");
 
 			/* Similar to the socket, waiting for a connection */
-			final RouteServerImpl impl = new RouteServerImpl();
-			impl.start();
-			impl.blockUntilShutdown();
+			while (true) {
+				start();
+
+				// new server, send ELC
+				manager.sendMessage(manager.getElcMessage(null));
+
+				blockUntilShutdown();
+			}
 
 		} catch (IOException e) {
 			// TODO better error message
@@ -89,10 +125,10 @@ public class RouteServerImpl extends RouteServiceImplBase {
 	}
 
 	private void start() throws Exception {
-		svr = ServerBuilder.forPort(Engine.getInstance().getServerPort()).addService(new RouteServerImpl()).build();
+		svr = ServerBuilder.forPort(Engine.getInstance().getServerPort()).addService(this).build();
 
-		Engine.logger.info(String.format("Hello! I am %s running at %d ...", Engine.getInstance().serverName, Engine.getInstance().getServerPort()));
 		svr.start();
+		Engine.log(String.format("Started."));
 
 		Runtime.getRuntime().addShutdownHook(new Thread() {
 			@Override
@@ -100,9 +136,11 @@ public class RouteServerImpl extends RouteServiceImplBase {
 				RouteServerImpl.this.stop();
 			}
 		});
+
+		Engine.log("Restarting ...");
 	}
 
-	protected void stop() {
+	public void stop() {
 		svr.shutdown();
 	}
 
@@ -116,56 +154,108 @@ public class RouteServerImpl extends RouteServiceImplBase {
 		return true;
 	}
 
+	private Route.Builder getRouteBuilder(Route request) {
+		Route.Builder ack = Route.newBuilder();
+
+		ack.setId(request.getId());
+		ack.setOrigin(request.getOrigin());
+		ack.setDestination(request.getDestination());
+		ack.setPath(request.getPath());
+		ack.setPayload(request.getPayload());
+
+		return ack;
+	}
+
 	/**
 	 * server received a message!
 	 */
 	@Override
 	public void request(route.Route request, StreamObserver<route.Route> responseObserver) {
-		Engine.logger.info("\n\n\tServer " + Engine.getInstance().getServerID() + " received a message.");
+		Engine.log("Incoming message.");
 
-		// TODO refactor to use RouteServer to isolate implementation from
-		// transportation
+		// TODO refactor to use RouteServer to isolate implementation from transportation
 
-		// ack work
-		route.Route.Builder ack = null;
-		if (verify(request)) {
+		// TODO use if (verify(request)) for verification
 
-			// delay work
-			var w = new Work(request, responseObserver);
-			if (MgmtWorker.isPriority(request))
-				Engine.getInstance().mgmtQueue.add(w);
-			else
-				Engine.getInstance().workQueue.add(w);
+//		 if (verify(request)) {
+//			if (isThisMessageForMe(request) && request.getId() != 0) {
+//				var w = new Work(request, responseObserver);
+//				if (MgmtWorker.isPriority(request))
+//					Engine.getInstance().mgmtQueue.add(w);
+//				else
+//					Engine.getInstance().workQueue.add(w);
+//			}
 
-			if (Engine.logger.isDebugEnabled())
-				Engine.logger.debug("request() qsize = " + Engine.getInstance().workQueue.size());
+//			if (Engine.logger.isDebugEnabled())
+//				Engine.logger.debug("request() qsize = " + Engine.getInstance().workQueue.size());
+//		} else {
+//			// TODO rejecting the request - what do we do?
+//			// buildRejection(ack,request);
+//		}
 
-			ack = route.Route.newBuilder();
+		Route messageAck = manager.getAck(request);
 
-			// routing/header information
-			ack.setId(Engine.getInstance().getNextMessageID());
-			ack.setOrigin(Engine.getInstance().getServerID());
-			ack.setDestination(request.getOrigin());
-			ack.setPath(request.getPath());
-
-			// TODO ack of work
-			ack.setPayload(ack(request));
-		} else {
-			// TODO rejecting the request - what do we do?
-			// buildRejection(ack,request);
-		}
-
-		route.Route rtn = ack.build();
-		responseObserver.onNext(rtn);
-
-		if (Engine.getInstance().getServerID() == request.getDestination())
-			Engine.logger.info("\n\n\tThe message is for me!");
-		else {
-			Engine.logger.info("\n\n\tForwarding the message ...");
-			Link link = Engine.getInstance().links.get(0);
-			RouteClient.run(link.getPort(), (int) request.getDestination(), 1);
-		}
-
+		responseObserver.onNext(messageAck);
 		responseObserver.onCompleted();
+
+		// TODO shift responseObserver.onCompleted(); to the bottom if uncommenting below block
+
+//		if (isThisMessageForMe(request)) {
+//			Engine.log("The message is for me!");
+//
+//			// TODO process
+//			if (request.getId() == 0) {
+//				int finalPort = Integer.parseInt(request.getPath());
+////				if (finalPort == Engine.getInstance().getServerID()) {
+////					System.out.println(""+ request.getPayload().toStringUtf8());
+////					return;
+////				}
+//				Engine.log(" Payload from processor server: \"" + request.getPayload().toStringUtf8() + "\"");
+////				RouteClient.run(finalPort, request);
+//				return;  // this is the END !!!!!!!
+//			}
+//
+//			Route.Builder replyBuilder = getRouteBuilder(request);
+//			replyBuilder.setId(0);  // crucial
+//			replyBuilder.setOrigin(request.getDestination());
+//			replyBuilder.setDestination(request.getOrigin());
+//			replyBuilder.setPayload(ByteString.copyFrom("Got it man.".getBytes()));
+//
+//			request = replyBuilder.build();
+////			prepareAndSendReply(replyBuilder.build());
+//		}
+//
+//		// this is a reply message on the way back
+//		else if (request.getId() == 0) {
+//			Engine.log("This is a reply. Forwarding the message ...");
+////			prepareAndSendReply(request);
+//		}
+//
+//		// forwarding message ahead in the ring
+//		else {
+//			Engine.log("Forwarding the message ...");
+//		}
+
+//		request = getRouteBuilder(request).setPath(request.getPath() + "/" + Engine.getInstance().getServerPort()).build();
+
+		manager.processIncomingMessage(request);
+	}
+
+	private boolean isThisMessageForMe(Route request) {
+		return Engine.getInstance().getServerID() == request.getDestination();
+	}
+
+	private void prepareAndSendReply(Route request) {
+		String[] pathParts = request.getPath().split("/");
+		if (request.getPath().contains("/"))
+			request = getRouteBuilder(request).setPath(request.getPath().substring(0, request.getPath().lastIndexOf("/"))).build();
+		else
+			request = getRouteBuilder(request).setPath("").build();
+
+		Engine.log(request.getPath());
+		Engine.log("pathParts[pathParts.length - 1]");
+		Engine.log(pathParts[pathParts.length - 1]);
+
+		RouteClient.run(Integer.parseInt(pathParts[pathParts.length - 1]), request);
 	}
 }

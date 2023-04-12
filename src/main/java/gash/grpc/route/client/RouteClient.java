@@ -70,4 +70,16 @@ public class RouteClient {
 
 		ch.shutdown();
 	}
+
+	public static void run(int linkPort, Route request) {
+		ManagedChannel ch = ManagedChannelBuilder.forAddress("localhost", linkPort).usePlaintext().build();
+		RouteServiceGrpc.RouteServiceBlockingStub stub = RouteServiceGrpc.newBlockingStub(ch);
+
+		// blocking!
+		var r = stub.request(request);
+
+		response(r);
+
+		ch.shutdown();
+	}
 }
