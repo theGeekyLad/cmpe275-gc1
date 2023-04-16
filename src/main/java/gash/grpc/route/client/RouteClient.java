@@ -2,10 +2,13 @@ package gash.grpc.route.client;
 
 import com.google.protobuf.ByteString;
 
+import gash.grpc.route.server.Engine;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import route.Route;
 import route.RouteServiceGrpc;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * copyright 2023, gash
@@ -50,26 +53,26 @@ public class RouteClient {
 		System.out.println("reply: " + reply.getId() + ", from: " + reply.getOrigin() + ", payload: " + payload);
 	}
 
-	public static void main(String[] args) {
-		RouteClient.run(RouteClient.port, 3038, 1);
-	}
+//	public static void main(String[] args) {
+//		RouteClient.run(RouteClient.port, 3038, 1);
+//	}
 
-	public static void run(int linkPort, int destinationId, int I) {
-		ManagedChannel ch = ManagedChannelBuilder.forAddress("localhost", linkPort).usePlaintext().build();
-		RouteServiceGrpc.RouteServiceBlockingStub stub = RouteServiceGrpc.newBlockingStub(ch);
-
-		for (int i = 0; i < I; i++) {
-			// simulate different type of messages that can be sent
-			var path = (i % 5 == 0) ? "/manage/something" : "/to/somewhere";
-			var msg = RouteClient.constructMessage(i, destinationId, path, "hello " + i);
-
-			// blocking!
-			var r = stub.request(msg);
-			response(r);
-		}
-
-		ch.shutdown();
-	}
+//	public static void run(int linkPort, int destinationId, int I) {
+//		ManagedChannel ch = ManagedChannelBuilder.forAddress("localhost", linkPort).usePlaintext().build();
+//		RouteServiceGrpc.RouteServiceBlockingStub stub = RouteServiceGrpc.newBlockingStub(ch);
+//
+//		for (int i = 0; i < I; i++) {
+//			// simulate different type of messages that can be sent
+//			var path = (i % 5 == 0) ? "/manage/something" : "/to/somewhere";
+//			var msg = RouteClient.constructMessage(i, destinationId, path, "hello " + i);
+//
+//			// blocking!
+//			var r = stub.request(msg);
+//			response(r);
+//		}
+//
+//		ch.shutdown();
+//	}
 
 	public static void run(int linkPort, Route request) {
 		ManagedChannel ch = ManagedChannelBuilder.forAddress("localhost", linkPort).usePlaintext().build();

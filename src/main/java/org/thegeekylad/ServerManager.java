@@ -10,24 +10,34 @@ import org.thegeekylad.util.constants.MessageType;
 import route.Route;
 
 import java.util.Date;
+import java.util.Queue;
+import java.util.Random;
+import java.util.concurrent.LinkedBlockingDeque;
 
 public class ServerManager {
     private Route incomingMessage;
     private Integer portLeader;
-    volatile private Date dateLastSentElc;
+    private Date dateLastSentElc;
     private RouteServerImpl routeServer;
+    final private LinkedBlockingDeque<Route> queueElcMessages;
+    private Thread senderThread;
+    private int requestCount;
+    private int requestCountElc;
+    private int serverPriority;  // TODO make something more meaningful
 
     // ----------------------------------------------------
 
-    public long requestCount;
-    public long requestCountElc;
     public ServerManager() {
         requestCount = 0;
         requestCountElc = 0;
         portLeader = null;
+        queueElcMessages = new LinkedBlockingDeque<>();
 
-        Engine.log("Service manager created.");
+        serverPriority = new Random().nextInt(10);
+
+        Engine.log("Service manager created. Priority: " + serverPriority);
     }
+
     public ServerManager(RouteServerImpl routeServer) {
         this();
         this.routeServer = routeServer;
@@ -45,9 +55,9 @@ public class ServerManager {
         return Helper.getDate(payload.split("#")[1]);
     }
 
-    private void setLeaderPort(Route incomingMessage) {
-        String payload = new String(incomingMessage.getPayload().toByteArray());
-        portLeader = Integer.parseInt(payload.split("#")[3]);
+    private int getPort(Route msg) {
+        String payload = new String(msg.getPayload().toByteArray());
+        return Integer.parseInt(payload.split("#")[3]);
     }
 
     private int getPriority(Route msg) {
@@ -63,31 +73,60 @@ public class ServerManager {
         return ByteString.copyFrom(raw);
     }
 
-    // ----------------------------------------------------
-
-    public void sendMessage(Route msg) {
-        while (true) {
-            try {
-                Link link = Engine.getInstance().links.get(0);
-                RouteClient.run(link.getPort(), msg);
-                Engine.log("Connected. Sent.");
-
-                break;
-            } catch (Exception e) {
-//                e.printStackTrace();
-
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e1) {
-                }
-
-                Engine.log("Couldn't connect, retrying ...");
+    private void processEnqueueElc(Route msg) {
+        synchronized (queueElcMessages) {
+            if (queueElcMessages.peekFirst() == null) {
+                queueElcMessages.add(msg);
+                Engine.log("\tQueue: Directly enqueued.");
+            } else if (getTimestamp(msg).before(getTimestamp(queueElcMessages.peekFirst()))) {
+                queueElcMessages.pollFirst();
+                queueElcMessages.addFirst(msg);
+                Engine.log("\tQueue: Updated newer ELC with older.");
             }
         }
     }
 
+    // ----------------------------------------------------
+
+    public void sendMessage(Route msg) {
+        // TODO only if this is an elc type message
+        Engine.log("Enqueued message.");
+        processEnqueueElc(msg);
+
+        if (senderThread == null || !senderThread.isAlive()) {
+            senderThread = new Thread(() -> {
+                while (true) {
+                    try {
+                        synchronized (queueElcMessages) {
+                            // stopping case
+                            if (queueElcMessages.isEmpty()) break;
+
+                            Engine.log("Pending: " + queueElcMessages.size());
+
+                            Link link = Engine.getInstance().links.get(0);
+                            Router.getInstance().run(link.getPort(), queueElcMessages.peek());
+                            queueElcMessages.poll();
+                            Engine.log("Connected. Sent.");
+                        }
+                    } catch (Exception e) {
+                        Router.getInstance().close();
+
+                        try {
+                            Thread.sleep(1000);
+                        } catch (InterruptedException e1) {
+                        }
+
+                        Engine.log("Couldn't connect, retrying ...");
+                    }
+                }
+                Engine.log("Thread stopped.");
+            });
+            senderThread.start();
+        }
+    }
+
     public int getMyPriority() {
-        return 1;  // TODO something meaningful
+        return serverPriority;  // TODO something meaningful
     }
 
     public void processIncomingMessage(Route incomingMessage) {
@@ -129,18 +168,29 @@ public class ServerManager {
                 else {
                     Engine.log("\tBINGO! Got back my ELC.");
 
-                    // this is the second time
-                    if (++requestCountElc == 2) {
-                        Engine.log("\tSecond time. Stopping everything. Leader has been elected.");
+                    requestCountElc++;
 
-                        setLeaderPort(incomingMessage);
-                        // TODO show that election is done
-                        return;  // stop election
+                    switch (requestCountElc) {
+                        case 1:
+                            // this is the first time you got an elc request: might be leader?
+                            Engine.log("\tFirst time. Spreading the word.");
+                            sendMessage(getElcMessage(incomingMessage));
+                            break;
+
+                        case 2:
+                            // this is the second time
+                            Engine.log("\tSecond time. Stopping everything. Leader has been elected.");
+                            portLeader = getPort(incomingMessage);
+                            Engine.log("\t\tLeader: " + portLeader);
+
+                            // TODO show that election is done
+
+                            if (incomingMessage.getOrigin() == Engine.getInstance().serverPort)
+                                Engine.log("\tBack at me. I started everything. Stopping.");
+                            else
+                                sendMessage(getElcMessage(incomingMessage));  // pass on the update
+                            break;
                     }
-
-                    // this is the first time you got an elc request: might be leader?
-                    Engine.log("\tFirst time. Spreading the word.");
-                    sendMessage(getElcMessage(incomingMessage));
                 }
             }
 
@@ -158,34 +208,48 @@ public class ServerManager {
     public Route getElcMessage(Route incomingMessage) {
         Route.Builder msg = Route.newBuilder();
         msg.setId(0);
-        msg.setOrigin(0);
+        msg.setOrigin(incomingMessage == null ? Engine.getInstance().serverPort : incomingMessage.getOrigin());
         msg.setDestination(0);
         msg.setPath("");
+
+        int myPriority = getMyPriority();
 
         synchronized (this) {
             incomingMessage = incomingMessage == null ? this.incomingMessage : incomingMessage;
 
-            int myPriority = getMyPriority();
-            int priority = incomingMessage == null ? myPriority : Math.max(myPriority, getPriority(incomingMessage));
-            String timestamp = incomingMessage == null
-                    ? Helper.getTimestampString(dateLastSentElc = new Date())
-                    : Helper.getTimestampString(getTimestamp(incomingMessage));
-
-            if (incomingMessage == null) Engine.log("\tSending ELC before hearing from anyone! Let's go.");
-            if (incomingMessage == null) Engine.log(dateLastSentElc == null ? "\tNull :/" : "\tDate present!");
-
-            msg.setPayload(
-                    ByteString.copyFrom(
-                            new StringBuilder()
-                                    .append(MessageType.ELC.name())
-                                    .append("#")
-                                    .append(timestamp)
-                                    .append("#")
-                                    .append(priority)
-                                    .toString()
-                                    .getBytes()
-                    )
-            );
+            if (incomingMessage == null) {
+                Engine.log("\tSending ELC before hearing from anyone! Let's go.");
+                msg.setPayload(
+                        ByteString.copyFrom(
+                                new StringBuilder()
+                                        .append(MessageType.ELC.name())
+                                        .append("#")
+                                        .append(Helper.getTimestampString(dateLastSentElc = new Date()))
+                                        .append("#")
+                                        .append(myPriority)
+                                        .append("#")
+                                        .append(myPriority)
+                                        .toString()
+                                        .getBytes()
+                        )
+                );
+            } else {
+                int incomingPriority = getPriority(incomingMessage);
+                Route.Builder builder = msg.setPayload(
+                        ByteString.copyFrom(
+                                new StringBuilder()
+                                        .append(MessageType.ELC.name())
+                                        .append("#")
+                                        .append(Helper.getTimestampString(getTimestamp(incomingMessage)))
+                                        .append("#")
+                                        .append(Math.max(myPriority, incomingPriority))
+                                        .append("#")
+                                        .append(myPriority > incomingPriority ? Engine.getInstance().serverPort : getPort(incomingMessage))
+                                        .toString()
+                                        .getBytes()
+                        )
+                );
+            }
 
 //            else {
 //
