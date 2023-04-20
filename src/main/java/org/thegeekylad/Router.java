@@ -3,6 +3,7 @@ package org.thegeekylad;
 import com.google.protobuf.ByteString;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import org.thegeekylad.util.ConsoleColors;
 import route.Route;
 import route.RouteServiceGrpc;
 
@@ -19,7 +20,7 @@ public class Router {
 	private void response(Route reply) {
 		// TODO handle the reply/response from the server
 		var payload = new String(reply.getPayload().toByteArray());
-		System.out.println("reply: " + reply.getId() + ", from: " + reply.getOrigin() + ", payload: " + payload);
+		System.out.println(ConsoleColors.RESET + "reply: " + reply.getId() + ", from: " + reply.getOrigin() + ", payload: " + payload);
 	}
 
 	public void run(int linkPort, Route request) {

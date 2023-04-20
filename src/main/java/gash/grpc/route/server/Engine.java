@@ -6,7 +6,8 @@ import java.util.concurrent.LinkedBlockingDeque;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.thegeekylad.util.constants.MessageType;
+import org.thegeekylad.util.ConsoleColors;
+import org.thegeekylad.util.MyLogger;
 
 /**
  * Core components to process work; shared with/across all sessions.
@@ -45,11 +46,13 @@ public class Engine {
 	// ------------------------------------------------------------------------
 
 	public boolean hadBeenRunning;
+	public MyLogger myLogger;
 
 	// ------------------------------------------------------------------------
 
 	private Engine() {
 		hadBeenRunning = false;
+		myLogger = new MyLogger("Engine", ConsoleColors.BLUE);
 	}
 
 	public static void configure(Properties conf) {
@@ -122,29 +125,29 @@ public class Engine {
 					conf.getProperty("server.link.ip"),
 					Integer.parseInt(conf.getProperty("server.link.port"))
 			);
-			Engine.log(String.format("Links to %s with an id of %d running at %s", link.getServerName(), link.getServerID(), link.getIP() + ":" + link.getPort()));
+			myLogger.log(String.format("Links to %s with an id of %d running at %s", link.getServerName(), link.getServerID(), link.getIP() + ":" + link.getPort()));
 			links.add(link);
 		}
 
-		Engine.log("starting queues");
+		myLogger.log("starting queues");
 		workQueue = new LinkedBlockingDeque<Work>();
 		mgmtQueue = new LinkedBlockingDeque<Work>();
 
-		Engine.log("starting workers");
+		myLogger.log("starting workers");
 		workers = new ArrayList<Worker>();
 		var w = new Worker();
 		workers.add(w);
 		w.start();
 
-		Engine.log("starting manager");
+		myLogger.log("starting manager");
 		manager = new MgmtWorker();
 		manager.start();
 
-		Engine.log("initializaton complete");
+		myLogger.log("initializaton complete");
 	}
 
 	public synchronized void shutdown(boolean hard) {
-		Engine.log("server shutting down.");
+		myLogger.log("server shutting down.");
 
 		if (!hard && workQueue.size() > 0) {
 			try {
@@ -190,17 +193,5 @@ public class Engine {
 
 	public Integer getServerPort() {
 		return serverPort;
-	}
-
-	public static void logDivider() {
-		log("---------------------------------------------------");
-	}
-
-	public static void logType(MessageType message) {
-		log(" Message type: " + message.name());
-	}
-
-	public static void log(String message) {
-		System.out.println(message);
 	}
 }

@@ -10,8 +10,8 @@ import io.grpc.Server;
 import io.grpc.ServerBuilder;
 import io.grpc.stub.StreamObserver;
 
-import org.thegeekylad.ServerManager;
-import org.thegeekylad.util.constants.MessageType;
+import org.thegeekylad.server.ServerManager;
+import org.thegeekylad.util.MyLogger;
 import route.Route;
 import route.RouteServiceGrpc.RouteServiceImplBase;
 
@@ -32,11 +32,11 @@ import route.RouteServiceGrpc.RouteServiceImplBase;
  */
 public class RouteServerImpl extends RouteServiceImplBase {
 	private Server svr;
-
 	private ServerManager manager;
+	private MyLogger myLogger;
 
 	public RouteServerImpl() {
-		manager = new ServerManager(this);
+		myLogger = new MyLogger(getClass().getName(), null);
 	}
 
 	/**
@@ -81,6 +81,7 @@ public class RouteServerImpl extends RouteServiceImplBase {
 		try {
 			Properties conf = RouteServerImpl.getConfiguration(new File(path));
 			Engine.configure(conf);
+			manager = new ServerManager(this);  // has to be init after engine configuration
 //			Engine.getConf();
 
 			///////////////////////////////////////////////////////////////////
@@ -99,14 +100,13 @@ public class RouteServerImpl extends RouteServiceImplBase {
 //				Link link = Engine.getInstance().links.get(0);
 //				RouteClient.run(link.getPort(), route);
 //
-//				Engine.log("Message injected into ring.");
+//				myLogger.log("Message injected into ring.");
 //			}
 			///////////////////////////////////////////////////////////////////
 
-			Engine.logDivider();
-			Engine.log("" + Engine.getInstance().serverName.toUpperCase());
-			Engine.logDivider();
-			System.out.println("Initialized.");
+			myLogger.logDivider();
+			myLogger.log("" + Engine.getInstance().serverName.toUpperCase());
+			myLogger.logDivider();
 
 			/* Similar to the socket, waiting for a connection */
 			while (true) {
@@ -128,7 +128,7 @@ public class RouteServerImpl extends RouteServiceImplBase {
 		svr = ServerBuilder.forPort(Engine.getInstance().getServerPort()).addService(this).build();
 
 		svr.start();
-		Engine.log(String.format("Started."));
+		myLogger.log(String.format("Started."));
 
 		Runtime.getRuntime().addShutdownHook(new Thread() {
 			@Override
@@ -137,7 +137,7 @@ public class RouteServerImpl extends RouteServiceImplBase {
 			}
 		});
 
-		Engine.log("Restarting ...");
+		myLogger.log("Restarting ...");
 	}
 
 	public void stop() {
@@ -171,8 +171,6 @@ public class RouteServerImpl extends RouteServiceImplBase {
 	 */
 	@Override
 	public void request(route.Route request, StreamObserver<route.Route> responseObserver) {
-		Engine.log("Incoming message.");
-
 		// TODO refactor to use RouteServer to isolate implementation from transportation
 
 		// TODO use if (verify(request)) for verification
@@ -201,7 +199,7 @@ public class RouteServerImpl extends RouteServiceImplBase {
 		// TODO shift responseObserver.onCompleted(); to the bottom if uncommenting below block
 
 //		if (isThisMessageForMe(request)) {
-//			Engine.log("The message is for me!");
+//			myLogger.log("The message is for me!");
 //
 //			// TODO process
 //			if (request.getId() == 0) {
@@ -210,7 +208,7 @@ public class RouteServerImpl extends RouteServiceImplBase {
 ////					System.out.println(""+ request.getPayload().toStringUtf8());
 ////					return;
 ////				}
-//				Engine.log(" Payload from processor server: \"" + request.getPayload().toStringUtf8() + "\"");
+//				myLogger.log(" Payload from processor server: \"" + request.getPayload().toStringUtf8() + "\"");
 ////				RouteClient.run(finalPort, request);
 //				return;  // this is the END !!!!!!!
 //			}
@@ -227,13 +225,13 @@ public class RouteServerImpl extends RouteServiceImplBase {
 //
 //		// this is a reply message on the way back
 //		else if (request.getId() == 0) {
-//			Engine.log("This is a reply. Forwarding the message ...");
+//			myLogger.log("This is a reply. Forwarding the message ...");
 ////			prepareAndSendReply(request);
 //		}
 //
 //		// forwarding message ahead in the ring
 //		else {
-//			Engine.log("Forwarding the message ...");
+//			myLogger.log("Forwarding the message ...");
 //		}
 
 //		request = getRouteBuilder(request).setPath(request.getPath() + "/" + Engine.getInstance().getServerPort()).build();
@@ -252,9 +250,9 @@ public class RouteServerImpl extends RouteServiceImplBase {
 		else
 			request = getRouteBuilder(request).setPath("").build();
 
-		Engine.log(request.getPath());
-		Engine.log("pathParts[pathParts.length - 1]");
-		Engine.log(pathParts[pathParts.length - 1]);
+		myLogger.log(request.getPath());
+		myLogger.log("pathParts[pathParts.length - 1]");
+		myLogger.log(pathParts[pathParts.length - 1]);
 
 		RouteClient.run(Integer.parseInt(pathParts[pathParts.length - 1]), request);
 	}
