@@ -4,67 +4,81 @@ import com.google.protobuf.ByteString;
 import gash.grpc.route.server.Engine;
 import gash.grpc.route.server.Link;
 import gash.grpc.route.server.RouteServerImpl;
+import org.apache.commons.io.FileSystemUtils;
 import org.thegeekylad.Router;
+import org.thegeekylad.server.processor.MessageProcessor;
 import org.thegeekylad.util.ConsoleColors;
 import org.thegeekylad.util.Helper;
 import org.thegeekylad.util.MyLogger;
 import org.thegeekylad.util.constants.Constants;
-import org.thegeekylad.util.constants.MessageType;
+import org.thegeekylad.util.constants.QueryType;
 import route.Route;
 
-import java.util.Date;
-import java.util.Random;
+import java.io.IOException;
+import java.util.*;
 import java.util.concurrent.LinkedBlockingDeque;
 
 public class ServerManager {
     // ----------------------------------------------------
+    // managers
+    // ----------------------------------------------------
+    LeaderManager leaderManager = new LeaderManager(this);
+    // ----------------------------------------------------
     // routes
     // ----------------------------------------------------
-    private Route incomingMessage;
-    private Route messageHbt;
+    Route incomingMessage;
+    Route messageHbt;
     // ----------------------------------------------------
     // locks
     // ----------------------------------------------------
-    private final Object lockMessageHbt = new Object();
+    final Object lockMessageHbt = new Object();
     // ----------------------------------------------------
     // loggers
     // ----------------------------------------------------
-    private MyLogger myLogger;
-    private MyLogger loggerHbt;
-    private MyLogger loggerSuccess = new MyLogger(getClass().getName(), ConsoleColors.GREEN_BOLD);
-    private MyLogger loggerRecurring = new MyLogger(getClass().getName(), ConsoleColors.PURPLE);
-    private MyLogger loggerWarning = new MyLogger(getClass().getName(), ConsoleColors.YELLOW);
+    MyLogger myLogger;
+    MyLogger loggerHbt;
+    MyLogger loggerSuccess = new MyLogger(getClass().getName(), ConsoleColors.GREEN_BOLD);
+    MyLogger loggerRecurring = new MyLogger(getClass().getName(), ConsoleColors.PURPLE);
+    MyLogger loggerWarning = new MyLogger(getClass().getName(), ConsoleColors.YELLOW);
+    MyLogger loggerQuery = new MyLogger(getClass().getName(), ConsoleColors.CYAN);
+    MyLogger loggerResponse = new MyLogger(getClass().getName(), ConsoleColors.CYAN_UNDERLINED);
+    MyLogger loggerError = new MyLogger(getClass().getName(), ConsoleColors.RED_BACKGROUND);
+    MyLogger loggerLeader = new MyLogger(getClass().getName(), ConsoleColors.BLUE);
     // ----------------------------------------------------
     // threads
     // ----------------------------------------------------
-    private Thread threadSender;
-    private Thread threadHbtIncoming;
-    private Thread threadHbt;
+    Thread threadSender;
+    Thread threadHbtIncoming;
+    Thread threadHbt;
+    Thread threadQryProcessor;
     // ----------------------------------------------------
     // counts
     // ----------------------------------------------------
-    private int countRequests;
-    private int countRequestsElc;
-    private int countHbtMisses;
+    int countRequests;
+    int countRequestsElc;
+    int countHbtMisses;
+    int countServers;
     // ----------------------------------------------------
     // links
     // ----------------------------------------------------
-    private final Link link = Engine.getInstance().links.get(0);
-    private Long linkPrev = null;
+    final Link link = Engine.getInstance().links.get(0);
+    Long linkPrev = null;
     // ----------------------------------------------------
-    private Integer portLeader;
-    private Date dateLastSentElc;
-    private RouteServerImpl routeServer;
-    final private LinkedBlockingDeque<Route> queueElcMessages;
-    private int serverPriority;  // TODO make something more meaningful
-
+    // data structures
+    // ----------------------------------------------------
+    final LinkedBlockingDeque<Route> queueElcMessages = new LinkedBlockingDeque<>();
+    final LinkedBlockingDeque<Route> queueMessages = new LinkedBlockingDeque<>();
+    // ----------------------------------------------------
+    Integer portLeader;
+    Date dateLastSentElc;
+    RouteServerImpl routeServer;
+    int serverPriority;  // TODO make something more meaningful
     // ----------------------------------------------------
 
     public ServerManager() {
         countRequests = 0;
         countRequestsElc = 0;
         portLeader = null;
-        queueElcMessages = new LinkedBlockingDeque<>();
 
         myLogger = new MyLogger(getClass().getName(), ConsoleColors.GREEN);
         loggerHbt = new MyLogger(getClass().getName(), ConsoleColors.YELLOW);
@@ -81,27 +95,22 @@ public class ServerManager {
 
     // ----------------------------------------------------
 
-    private String getMessageType(Route msg) {
-        String payload = new String(msg.getPayload().toByteArray());
-        return payload.split("#")[0];
-    }
-
-    private Date getTimestamp(Route msgElc) {
-        String payload = new String(msgElc.getPayload().toByteArray());
+    Date getTimestamp(Route msgElc) {
+        String payload = MessageProcessor.getPayload(msgElc);
         return Helper.getDate(payload.split("#")[1]);
     }
 
-    private int getPort(Route msg) {
-        String payload = new String(msg.getPayload().toByteArray());
+    int getPort(Route msg) {
+        String payload = MessageProcessor.getPayload(msg);
         return Integer.parseInt(payload.split("#")[3]);
     }
 
-    private int getPriority(Route msg) {
-        String payload = new String(msg.getPayload().toByteArray());
+    int getPriority(Route msg) {
+        String payload = MessageProcessor.getPayload(msg);
         return Integer.parseInt(payload.split("#")[2]);
     }
 
-    private ByteString ack(route.Route msg) {
+    ByteString ack(route.Route msg) {
         // TODO complete processing
         final String blank = "accepted";
         byte[] raw = blank.getBytes();
@@ -109,7 +118,7 @@ public class ServerManager {
         return ByteString.copyFrom(raw);
     }
 
-    private void processEnqueueElc(Route msg) {
+    void processEnqueueElc(Route msg) {
         synchronized (queueElcMessages) {
             if (queueElcMessages.peekFirst() == null) {
                 queueElcMessages.add(msg);
@@ -122,11 +131,11 @@ public class ServerManager {
         }
     }
 
-    private boolean isDead(Thread thread) {
+    boolean isDead(Thread thread) {
         return thread == null || !thread.isAlive();
     }
 
-    private void sleep(long millis) {
+    void sleep(long millis) {
         try {
             Thread.sleep(millis);
         } catch (InterruptedException e) {
@@ -134,56 +143,60 @@ public class ServerManager {
     }
 
     public void sendMessage(Route msg) {
-        String messageTypeName = getMessageType(msg);
+        String messageTypeName = MessageProcessor.getType(msg);
 
-        if (messageTypeName.equals(MessageType.HBT.name())) {
+        if (messageTypeName.equals(MessageProcessor.Type.HBT.name())) {
             Router.getInstance().run(link.getPort(), msg);
             loggerRecurring.log("Heartbeat sent.");
             return;
         }
 
-        if (messageTypeName.equals(MessageType.RNG.name())) {
+        if (messageTypeName.equals(MessageProcessor.Type.RNG.name())) {
             Router.getInstance().run(link.getPort(), msg);
             loggerWarning.log("Ring restoration message sent.");
             return;
         }
 
-        if (messageTypeName.equals(MessageType.ELC.name())) {
+        if (messageTypeName.equals(MessageProcessor.Type.RES.name())
+                || messageTypeName.equals(MessageProcessor.Type.QRY.name())) {
+
+            // choose the right logger
+            (messageTypeName.equals(MessageProcessor.Type.RES.name())
+                    ? loggerResponse
+                    : loggerQuery).log("Enqueued query / response response message.");
+
+            queueMessages.addFirst(msg);
+
+            if (isDead(threadSender))
+                (threadSender = new Thread(this::startSendingQueuedMessages)).start();
+
+            return;
+        }
+
+        if (messageTypeName.equals(MessageProcessor.Type.ELC.name())) {
             myLogger.log("Enqueued message.");
+
+            // get rid of newer elcs in the queue
             processEnqueueElc(msg);
 
-            if (isDead(threadSender)) {
-                threadSender = new Thread(() -> {
-                    while (true) {
-                        try {
-                            synchronized (queueElcMessages) {
-                                // stopping case
-                                if (queueElcMessages.isEmpty()) break;
-
-//                                myLogger.log("Pending: " + queueElcMessages.size());
-
-                                Router.getInstance().run(link.getPort(), queueElcMessages.peek());
-                                queueElcMessages.poll();
-
-                                loggerSuccess.log("Connected. Sent.");
-                            }
-                        } catch (Exception e) {
-                            Router.getInstance().close();
-                            sleep(1000);
-                            myLogger.log("...");
-                        }
-                    }
-                    myLogger.log("Thread stopped.");
-                });
-                threadSender.start();
-            }
+            if (isDead(threadSender))
+                (threadSender = new Thread(this::startSendingQueuedMessages)).start();
 
             return;
         }
     }
 
     public int getMyPriority() {
-        return serverPriority;  // TODO something meaningful
+        return serverPriority;  // TODO make server priority score meaningful
+    }
+
+    public long getDiskFreeSpace() {
+        try {
+            return FileSystemUtils.freeSpaceKb("/") / 1024 / 1024;  // gb
+        } catch (IOException e) {
+            loggerError.log("Cannot query free space.");
+            return 0;
+        }
     }
 
     public void processIncomingMessage(Route incomingMessage) {
@@ -193,7 +206,7 @@ public class ServerManager {
         myLogger.log("Inside manager.");
 
         // TODO requestCount can be >= 2, even at the onset, if there are bombarding incoming requests
-        if (getMessageType(incomingMessage).equals(MessageType.ELC.name())) {
+        if (MessageProcessor.getType(incomingMessage).equals(MessageProcessor.Type.ELC.name())) {
             Date dateThisElc = getTimestamp(incomingMessage);
 
             // this elc message came in before my first was even sent (super rare)
@@ -216,7 +229,7 @@ public class ServerManager {
                 dateLastSentElc = dateThisElc;
                 countRequestsElc = 1;
 
-                sendMessage(getElcMessage(incomingMessage));
+                sendMessage(getElcMessage(incomingMessage, true));
             }
 
             // this elc is the same as the one initiated by me
@@ -226,34 +239,43 @@ public class ServerManager {
                 countRequestsElc++;
 
                 switch (countRequestsElc) {
-                    case 1:
+                    case 1 -> {
                         // this is the first time you got an elc request: might be leader?
                         myLogger.log("First time. Spreading the word.");
-                        sendMessage(getElcMessage(incomingMessage));
-                        break;
-
-                    case 2:
+                        sendMessage(getElcMessage(incomingMessage, false));
+                    }
+                    case 2 -> {
                         // this is the second time
                         myLogger.log("Second time. Stopping everything. Leader has been elected.");
                         portLeader = getPort(incomingMessage);
                         loggerSuccess.log("Leader elected: " + portLeader);
+                        if (isMeLeader()) {  // log server count only if leader
+                            countServers = MessageProcessor.Elc.getCount(incomingMessage);
+                            loggerSuccess.log("Server count in ring = " + countServers);
+                        }
 
                         // start sending heartbeats
                         if (isDead(threadHbt))
                             (threadHbt = new Thread(this::startSendingHeartbeats)).start();
-
                         if (incomingMessage.getOrigin() == Engine.getInstance().serverPort)
                             myLogger.log("Back at me. I started everything. Stopping.");
                         else
-                            sendMessage(getElcMessage(incomingMessage));  // pass on the update
-                        break;
+                            sendMessage(getElcMessage(incomingMessage, false));  // pass on the update
+
+
+                        // as a leader, start working on stuff (query, etc.)
+                        if (isMeLeader())
+                            leaderManager.initLeader();
+                    }
+
+                    // members do nothing
                 }
             }
             return;
         }
 
         // this is a hbt type message
-        if (getMessageType(incomingMessage).equals(MessageType.HBT.name())) {
+        if (MessageProcessor.getType(incomingMessage).equals(MessageProcessor.Type.HBT.name())) {
             synchronized (lockMessageHbt) {
                 messageHbt = incomingMessage;
             }
@@ -265,7 +287,7 @@ public class ServerManager {
         }
 
         // this is a ring completion request
-        if (getMessageType(incomingMessage).equals(MessageType.RNG.name())) {
+        if (MessageProcessor.getType(incomingMessage).equals(MessageProcessor.Type.RNG.name())) {
 
             loggerWarning.log("Ring restoration request received.");
 
@@ -273,25 +295,55 @@ public class ServerManager {
             if (link.getPort() == getRngOldPort(incomingMessage)) {
                 loggerWarning.log("Ring restoration request is for me. Replacing link ...");
                 link.setPort((int) incomingMessage.getOrigin());
-            }
-
-            else {
+            } else {
                 loggerWarning.log("Passing it on.");
                 sendMessage(incomingMessage);  // not for me, just pass it on
             }
+            return;
         }
 
-        // TODO - enqueue work - do some processing on incomingMessage or your own
+        // this is a query, offload to another thread?
+        if (MessageProcessor.getType(incomingMessage).equals(MessageProcessor.Type.QRY.name())) {
 
-//            Route.Builder messageForward = Route.newBuilder();
-//            messageForward.setId(Engine.getInstance().getNextMessageID());
-//            messageForward.setOrigin(Engine.getInstance().getServerID());
-//            messageForward.setDestination(link.getPort());
-//            messageForward.setPath("");
-//            messageForward.setPayload(ByteString.copyFrom("TODO insert payload.".getBytes()));
+            loggerQuery.log("Query received.");
+
+            // do leader stuff as a leader
+            if (isMeLeader()) {
+                loggerQuery.log("Hey, I'm the leader! Don't query me.");
+                return;
+            }
+
+            // just a member here
+            loggerQuery.log("Member here. Working on the query after passing it on ...");
+            sendMessage(incomingMessage);  // pass on the query to others
+
+            // offload processing
+            if (isDead(threadQryProcessor))
+                (threadQryProcessor = new Thread(() -> {
+                    startWorkingOnThisQuery(incomingMessage);
+                })).start();
+
+            return;
+        }
+
+        // this is a response from another member
+        if (MessageProcessor.getType(incomingMessage).equals(MessageProcessor.Type.RES.name())) {
+            if (isMeLeader()) {
+                loggerResponse.log("I'm the leader and I got the response for my query!");
+                leaderManager.processIncomingResponse(incomingMessage);
+                return;
+            }
+
+            // pass it on - just a response from some other member
+            sendMessage(incomingMessage);
+        }
     }
 
-    private void startExpectingHeartbeats() {
+    boolean isMeLeader() {
+        return portLeader == (int) Engine.getInstance().serverPort;
+    }
+
+    void startExpectingHeartbeats() {
         while (true) {
             sleep(Constants.INTERVAL_HBT);
 
@@ -314,24 +366,78 @@ public class ServerManager {
         }
     }
 
-    private void startSendingHeartbeats() {
+    void startSendingHeartbeats() {
         while (true) {
             sleep(1000);
             try {
-                sendMessage(getHbtMessage());
+                sendMessage(MessageProcessor.Hbt.getHbtMessage(link.getPort()));
             } catch (Exception e) {  // what if the next server is dead?
                 // ignore
             }
         }
     }
 
-    private int getRngOldPort(Route msg) {
-        String payload = new String(msg.getPayload().toByteArray());
+    void startSendingQueuedMessages() {
+        outer:
+        while (true) {
+            try {
+                synchronized (queueElcMessages) {
+                    while (true) {
+                        if (!queueElcMessages.isEmpty()) {
+                            Router.getInstance().run(link.getPort(), queueElcMessages.peek());
+                            queueElcMessages.poll();
+                            loggerSuccess.log("Connected. Sent.");
+                            continue;
+                        }
+                        break;  // quit
+                    }
+                }
+
+                // send pending responses
+                while (true) {
+                    if (!queueMessages.isEmpty()) {
+                        Router.getInstance().run(link.getPort(), queueMessages.poll());
+                        loggerQuery.log("Sent a query or response, I don't know.");
+                        continue outer;  // check if for pending elcs before sending responses
+                    }
+                    break;  // quit
+                }
+
+                break;  // suspend until a new elc or response message is to be sent
+            } catch (Exception e) {
+                Router.getInstance().close();
+                sleep(1000);
+                myLogger.log("...");
+            }
+        }
+        myLogger.log("Thread stopped.");
+    }
+
+    void startWorkingOnThisQuery(Route messageQuery) {
+//        while (true) {
+//            sleep(1000);
+//            try {
+//                sendMessage(MessageProcessor.Hbt.getHbtMessage(link.getPort()));
+//            } catch (Exception e) {  // what if the next server is dead?
+//                // ignore
+//            }
+//        }
+
+        if (MessageProcessor.Qry.getType(messageQuery).equals(QueryType.DSK.name())) {
+            loggerResponse.log("Response built. Enqueueing send ...");
+            sendMessage(MessageProcessor.Res.getMessage(
+                    MessageProcessor.Qry.getId(incomingMessage),
+                    String.valueOf(getDiskFreeSpace())));
+        }
+    }
+
+    int getRngOldPort(Route msg) {
+        String payload = MessageProcessor.getPayload(msg);
         return Integer.parseInt(payload.split("#")[1]);
     }
 
-    private Route getRngMessage() {
-        String payload = MessageType.RNG.name() + "#" + linkPrev;
+    Route getRngMessage() {
+        String payload = MessageProcessor.Type.RNG.name() + "#" + linkPrev;
         return Route.newBuilder()
                 .setId(0)
                 .setOrigin(Engine.getInstance().serverPort)
@@ -341,17 +447,7 @@ public class ServerManager {
                 .build();
     }
 
-    private Route getHbtMessage() {
-        return Route.newBuilder()
-                .setId(0)
-                .setOrigin(Engine.getInstance().serverPort)
-                .setDestination(link.getPort())
-                .setPath("")
-                .setPayload(ByteString.copyFrom(MessageType.HBT.name().getBytes()))
-                .build();
-    }
-
-    public Route getElcMessage(Route incomingMessage) {
+    public Route getElcMessage(Route incomingMessage, boolean mustCount) {
         Route.Builder msg = Route.newBuilder();
         msg.setId(0);
         msg.setDestination(0);
@@ -365,13 +461,15 @@ public class ServerManager {
             msg.setPayload(
                     ByteString.copyFrom(
                             new StringBuilder()
-                                    .append(MessageType.ELC.name())
+                                    .append(MessageProcessor.Type.ELC.name())
                                     .append("#")
                                     .append(Helper.getTimestampString(dateLastSentElc = new Date()))
                                     .append("#")
                                     .append(myPriority)
                                     .append("#")
-                                    .append(myPriority)
+                                    .append(Engine.getInstance().serverPort)
+                                    .append("#")
+                                    .append(1)
                                     .toString()
                                     .getBytes()
                     )
@@ -379,16 +477,20 @@ public class ServerManager {
         } else {
             int incomingPriority = getPriority(incomingMessage);
             msg.setOrigin(incomingMessage.getOrigin());
+            int incomingServerCount = MessageProcessor.Elc.getCount(incomingMessage);
+
             msg.setPayload(
                     ByteString.copyFrom(
                             new StringBuilder()
-                                    .append(MessageType.ELC.name())
+                                    .append(MessageProcessor.Type.ELC.name())
                                     .append("#")
                                     .append(Helper.getTimestampString(getTimestamp(incomingMessage)))
                                     .append("#")
                                     .append(Math.max(myPriority, incomingPriority))
                                     .append("#")
                                     .append(myPriority > incomingPriority ? Engine.getInstance().serverPort : getPort(incomingMessage))
+                                    .append("#")
+                                    .append(mustCount ? incomingServerCount + 1 : incomingServerCount)
                                     .toString()
                                     .getBytes()
                     )
