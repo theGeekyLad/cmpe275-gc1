@@ -1,5 +1,7 @@
 package org.thegeekylad.util;
 
+import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -18,5 +20,41 @@ public class Helper {
 
     public static Date getDate(String timestamp) {
         return Date.from(Instant.from(DateTimeFormatter.ISO_INSTANT.parse(timestamp)));
+    }
+
+    public static boolean isDead(Thread thread) {
+        return thread == null || !thread.isAlive();
+    }
+
+    public static String csvToString(File csvFile) {
+        try {
+            StringBuilder stringBuilder = new StringBuilder();
+
+            BufferedReader reader = new BufferedReader(new FileReader(csvFile));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                stringBuilder.append(line);
+                stringBuilder.append(System.lineSeparator());
+            }
+
+            String csvString = stringBuilder.toString();
+            byte[] bytes = csvString.getBytes(StandardCharsets.UTF_8);
+
+            return new String(bytes, StandardCharsets.ISO_8859_1);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    public static void stringToCsv(String csvBytesString, File outputFile) {
+        byte[] bytes = csvBytesString.getBytes(StandardCharsets.ISO_8859_1);
+        String csvContent = new String(bytes, StandardCharsets.UTF_8);
+
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
+            writer.write(csvContent);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 }

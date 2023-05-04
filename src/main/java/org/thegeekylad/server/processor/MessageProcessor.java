@@ -7,7 +7,7 @@ import route.Route;
 
 public class MessageProcessor {
     public enum Type {
-        ETL, HBT, ELC, QRY, RES, NEW, RNG;
+        HBT, ELC, QRY, RES, NEW, RNG;
     }
 
     public static String getPayload(Route msg) {
@@ -32,7 +32,7 @@ public class MessageProcessor {
     // hbt message management
     // ----------------------------------------------------
     public static class Hbt {
-        public static Route getHbtMessage(Integer portDestination) {
+        public static Route getMessage(Integer portDestination) {
             return Route.newBuilder()
                     .setId(0)
                     .setOrigin(Engine.getInstance().serverPort)
@@ -47,8 +47,8 @@ public class MessageProcessor {
     // qry message management
     // ----------------------------------------------------
     public static class Qry {
-        public static Route getQryMessage(String id, QueryType queryType) {
-            String payload = MessageProcessor.Type.QRY.name() + "#" + id + "#" + queryType.name();
+        public static Route getMessage(String id, QueryType queryType, String data) {
+            String payload = MessageProcessor.Type.QRY.name() + "#" + id + "#" + queryType.name() + "#" + data;
             return Route.newBuilder()
                     .setId(0)
                     .setOrigin(Engine.getInstance().serverPort)

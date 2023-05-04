@@ -50,7 +50,7 @@ public class ServerManager {
     Thread threadSender;
     Thread threadHbtIncoming;
     Thread threadHbt;
-    Thread threadQryProcessor;
+    Worker worker = new Worker(this);
     // ----------------------------------------------------
     // counts
     // ----------------------------------------------------
@@ -64,7 +64,7 @@ public class ServerManager {
     final Link link = Engine.getInstance().links.get(0);
     Long linkPrev = null;
     // ----------------------------------------------------
-    // data structures
+    // queues
     // ----------------------------------------------------
     final LinkedBlockingDeque<Route> queueElcMessages = new LinkedBlockingDeque<>();
     final LinkedBlockingDeque<Route> queueMessages = new LinkedBlockingDeque<>();
@@ -131,10 +131,6 @@ public class ServerManager {
         }
     }
 
-    boolean isDead(Thread thread) {
-        return thread == null || !thread.isAlive();
-    }
-
     void sleep(long millis) {
         try {
             Thread.sleep(millis);
@@ -145,41 +141,47 @@ public class ServerManager {
     public void sendMessage(Route msg) {
         String messageTypeName = MessageProcessor.getType(msg);
 
+        // send heartbeats
         if (messageTypeName.equals(MessageProcessor.Type.HBT.name())) {
             Router.getInstance().run(link.getPort(), msg);
             loggerRecurring.log("Heartbeat sent.");
             return;
         }
 
+        // send ring restoration
         if (messageTypeName.equals(MessageProcessor.Type.RNG.name())) {
             Router.getInstance().run(link.getPort(), msg);
             loggerWarning.log("Ring restoration message sent.");
             return;
         }
 
-        if (messageTypeName.equals(MessageProcessor.Type.RES.name())
-                || messageTypeName.equals(MessageProcessor.Type.QRY.name())) {
-
-            // choose the right logger
-            (messageTypeName.equals(MessageProcessor.Type.RES.name())
-                    ? loggerResponse
-                    : loggerQuery).log("Enqueued query / response response message.");
-
-            queueMessages.addFirst(msg);
-
-            if (isDead(threadSender))
-                (threadSender = new Thread(this::startSendingQueuedMessages)).start();
-
-            return;
-        }
-
+        // send election message
         if (messageTypeName.equals(MessageProcessor.Type.ELC.name())) {
             myLogger.log("Enqueued message.");
 
             // get rid of newer elcs in the queue
             processEnqueueElc(msg);
 
-            if (isDead(threadSender))
+            if (Helper.isDead(threadSender))
+                (threadSender = new Thread(this::startSendingQueuedMessages)).start();
+
+            return;
+        }
+
+        // TODO if ELC or RNG is in effect, these shouldn't happen - re-prioritize
+        // send other messages
+        if (messageTypeName.equals(MessageProcessor.Type.RES.name())
+                || messageTypeName.equals(MessageProcessor.Type.QRY.name())) {
+
+            // choose the right logger
+            if (messageTypeName.equals(MessageProcessor.Type.RES.name()))
+                loggerResponse.log("Enqueued response message.");
+            else if (messageTypeName.equals(MessageProcessor.Type.QRY.name()))
+                loggerQuery.log("Enqueued query message.");
+
+            queueMessages.addFirst(msg);
+
+            if (Helper.isDead(threadSender))
                 (threadSender = new Thread(this::startSendingQueuedMessages)).start();
 
             return;
@@ -255,7 +257,7 @@ public class ServerManager {
                         }
 
                         // start sending heartbeats
-                        if (isDead(threadHbt))
+                        if (Helper.isDead(threadHbt))
                             (threadHbt = new Thread(this::startSendingHeartbeats)).start();
                         if (incomingMessage.getOrigin() == Engine.getInstance().serverPort)
                             myLogger.log("Back at me. I started everything. Stopping.");
@@ -280,7 +282,7 @@ public class ServerManager {
                 messageHbt = incomingMessage;
             }
             // start expecting heart beats: happens only once in a lifetime
-            if (isDead(threadHbtIncoming))
+            if (Helper.isDead(threadHbtIncoming))
                 (threadHbtIncoming = new Thread(this::startExpectingHeartbeats)).start();
 
             return;
@@ -302,10 +304,17 @@ public class ServerManager {
             return;
         }
 
-        // this is a query, offload to another thread?
+        // this is a query, offload to worker thread
         if (MessageProcessor.getType(incomingMessage).equals(MessageProcessor.Type.QRY.name())) {
 
             loggerQuery.log("Query received.");
+
+            // etl queries to be offloaded without a thought
+            if (MessageProcessor.Qry.getType(incomingMessage).equals(QueryType.ETL.name())) {
+                loggerWarning.log("ETL type of query.");
+                worker.enqueueWork(incomingMessage);
+                return;
+            }
 
             // do leader stuff as a leader
             if (isMeLeader()) {
@@ -317,11 +326,8 @@ public class ServerManager {
             loggerQuery.log("Member here. Working on the query after passing it on ...");
             sendMessage(incomingMessage);  // pass on the query to others
 
-            // offload processing
-            if (isDead(threadQryProcessor))
-                (threadQryProcessor = new Thread(() -> {
-                    startWorkingOnThisQuery(incomingMessage);
-                })).start();
+            // offload to worker
+            worker.enqueueWork(incomingMessage);
 
             return;
         }
@@ -370,7 +376,7 @@ public class ServerManager {
         while (true) {
             sleep(1000);
             try {
-                sendMessage(MessageProcessor.Hbt.getHbtMessage(link.getPort()));
+                sendMessage(MessageProcessor.Hbt.getMessage(link.getPort()));
             } catch (Exception e) {  // what if the next server is dead?
                 // ignore
             }
@@ -413,24 +419,6 @@ public class ServerManager {
         myLogger.log("Thread stopped.");
     }
 
-    void startWorkingOnThisQuery(Route messageQuery) {
-//        while (true) {
-//            sleep(1000);
-//            try {
-//                sendMessage(MessageProcessor.Hbt.getHbtMessage(link.getPort()));
-//            } catch (Exception e) {  // what if the next server is dead?
-//                // ignore
-//            }
-//        }
-
-        if (MessageProcessor.Qry.getType(messageQuery).equals(QueryType.DSK.name())) {
-            loggerResponse.log("Response built. Enqueueing send ...");
-            sendMessage(MessageProcessor.Res.getMessage(
-                    MessageProcessor.Qry.getId(incomingMessage),
-                    String.valueOf(getDiskFreeSpace())));
-        }
-    }
-
     int getRngOldPort(Route msg) {
         String payload = MessageProcessor.getPayload(msg);
         return Integer.parseInt(payload.split("#")[1]);
@@ -448,16 +436,16 @@ public class ServerManager {
     }
 
     public Route getElcMessage(Route incomingMessage, boolean mustCount) {
-        Route.Builder msg = Route.newBuilder();
-        msg.setId(0);
-        msg.setDestination(0);
-        msg.setPath("");
+        Route.Builder msg = Route.newBuilder()
+                .setId(0)
+                .setOrigin(Engine.getInstance().serverPort)
+                .setDestination(0)
+                .setPath("");
 
         int myPriority = getMyPriority();
 
         if (incomingMessage == null) {
             myLogger.log("Sending ELC before hearing from anyone! Let's go.");
-            msg.setOrigin(Engine.getInstance().serverPort);
             msg.setPayload(
                     ByteString.copyFrom(
                             new StringBuilder()
@@ -476,7 +464,6 @@ public class ServerManager {
             );
         } else {
             int incomingPriority = getPriority(incomingMessage);
-            msg.setOrigin(incomingMessage.getOrigin());
             int incomingServerCount = MessageProcessor.Elc.getCount(incomingMessage);
 
             msg.setPayload(

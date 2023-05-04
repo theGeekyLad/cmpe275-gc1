@@ -1,5 +1,5 @@
 package org.thegeekylad.util.constants;
 
 public enum QueryType {
-    EXT, DSK
+    EXT, DSK, ETL, LST
 }

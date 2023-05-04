@@ -2,12 +2,13 @@ package org.thegeekylad.server;
 
 import org.thegeekylad.model.RecordQuery;
 import org.thegeekylad.server.processor.MessageProcessor;
+import org.thegeekylad.util.Helper;
+import org.thegeekylad.util.constants.Constants;
 import org.thegeekylad.util.constants.QueryType;
 import route.Route;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+import java.io.File;
+import java.util.*;
 
 public class LeaderManager {
     // ----------------------------------------------------
@@ -15,20 +16,29 @@ public class LeaderManager {
     // ----------------------------------------------------
     Map<String, RecordQuery> initiatedQueriesMap = new HashMap<>();
     // ----------------------------------------------------
-    ServerManager serverManager;
+    // handlers
+    // ----------------------------------------------------
+    LstHandler lstHandler = new LstHandler();
     DskHandler dskHandler = new DskHandler();
+    EtlHandler etlHandler = new EtlHandler();
+    // ----------------------------------------------------
+    ServerManager serverManager;
 
     public LeaderManager(ServerManager serverManager) {
         this.serverManager = serverManager;
     }
 
-    void initLeader() {
+    Route getNewQuery(QueryType queryType, String data) {
         String queryId = UUID.randomUUID().toString();
 
-        // initiate a disk space query
-        RecordQuery recordQuery = new RecordQuery(queryId, QueryType.DSK, 0);
+        RecordQuery recordQuery = new RecordQuery(queryId, queryType, 0);
         initiatedQueriesMap.put(queryId, recordQuery);
-        serverManager.sendMessage(MessageProcessor.Qry.getQryMessage(queryId, QueryType.DSK));
+        return MessageProcessor.Qry.getMessage(queryId, queryType, data);
+    }
+
+    void initLeader() {
+        // initiate a server list query
+        serverManager.sendMessage(getNewQuery(QueryType.LST, ""));
     }
 
     // leader stuff - members, stay away
@@ -42,13 +52,51 @@ public class LeaderManager {
         RecordQuery recordQuery = initiatedQueriesMap.get(queryId);
         QueryType queryType = recordQuery.type;
 
-        // record disk spaces
+        // response is for server list query
+        if (queryType == QueryType.LST) {
+            serverManager.loggerLeader.log("Received a server list response.");
+            lstHandler.setServers.add(Integer.parseInt(MessageProcessor.Res.getData(incomingResponse)));
+            if (isLastResponse(recordQuery)) {
+
+                // list of servers received
+                lstHandler.handleResponse();
+
+                // initiate a disk utilization query
+                serverManager.sendMessage(getNewQuery(QueryType.DSK, ""));
+
+                postProcessingAfterResponse(incomingResponse);
+            }
+
+            return;
+        }
+
+        // response is for disk space query
         if (queryType == QueryType.DSK) {
             serverManager.loggerLeader.log("Received a disk space response.");
             dskHandler.diskUsageMap.put((int) incomingResponse.getOrigin(), Integer.parseInt(MessageProcessor.Res.getData(incomingResponse)));
             if (isLastResponse(recordQuery)) {
-                serverManager.loggerLeader.log("This is the last disk space response.");
+
+                // servers' disk utilization received
                 dskHandler.handleResponse();
+
+                // time for etl
+                doEtl();
+
+                postProcessingAfterResponse(incomingResponse);
+            }
+
+            return;
+        }
+
+        // response is for etl query
+        if (queryType == QueryType.ETL) {
+            serverManager.loggerLeader.log("Received a ETL response.");
+            if (isLastResponse(recordQuery)) {
+                serverManager.loggerLeader.log("Got all ETL responses!");
+
+                // servers' disk utilization received
+                etlHandler.handleResponse();
+
                 postProcessingAfterResponse(incomingResponse);
             }
         }
@@ -78,6 +126,29 @@ public class LeaderManager {
         initiatedQueriesMap.put(queryId, queryForResponse);
     }
 
+    void doEtl() {
+        serverManager.loggerLeader.log("Init ETL ...");
+
+        // TODO there's actually no csv file stored locally - everything comes form an external agent
+        File csvFile = new File(Constants.PATH_CSV_FILE + "/parking-violations.csv");
+        String csvBytesString = Helper.csvToString(csvFile);
+
+        serverManager.sendMessage(getNewQuery(QueryType.ETL, csvBytesString));
+    }
+
+    // ----------------------------------------------------
+    // lst case handler
+    // ----------------------------------------------------
+    class LstHandler {
+        Set<Integer> setServers = new HashSet<>();
+
+        void handleResponse() {
+            serverManager.loggerLeader.log("Discovered these servers in the ring:");
+            for (Integer server : setServers)
+                serverManager.loggerLeader.log(server + ":");
+        }
+    }
+
     // ----------------------------------------------------
     // dsk case handler
     // ----------------------------------------------------
@@ -85,10 +156,18 @@ public class LeaderManager {
         Map<Integer, Integer> diskUsageMap = new HashMap<>();
 
         void handleResponse() {
+            serverManager.loggerLeader.log("Here is the individual server disk utilization info:");
             for (Map.Entry<Integer, Integer> entry : diskUsageMap.entrySet())
-                serverManager.loggerLeader.log(entry.getKey() + "|" + entry.getValue());
+                serverManager.loggerLeader.log(entry.getKey() + ": " + entry.getValue() + "GB free.");
+        }
+    }
 
-            // TODO something else with disk spaces
+    // ----------------------------------------------------
+    // etl case handler
+    // ----------------------------------------------------
+    class EtlHandler {
+        void handleResponse() {
+            serverManager.loggerLeader.log("ETL fulfilled. Good show");
         }
     }
 }
