@@ -309,25 +309,32 @@ public class ServerManager {
 
             loggerQuery.log("Query received.");
 
-            // etl queries to be offloaded without a thought
-            if (MessageProcessor.Qry.getType(incomingMessage).equals(QueryType.ETL.name())) {
-                loggerWarning.log("ETL type of query.");
+            // do something only if this query is for me or generic "0"
+            if (incomingMessage.getDestination() == 0 || incomingMessage.getDestination() == Engine.getInstance().serverPort) {
+
+                // etl queries to be offloaded without a thought
+                if (MessageProcessor.Qry.getType(incomingMessage).equals(QueryType.ETL.name())) {
+                    loggerWarning.log("ETL type of query.");
+                    worker.enqueueWork(incomingMessage);
+                    return;
+                }
+
+                // do leader stuff as a leader
+                if (isMeLeader()) {
+                    loggerQuery.log("Hey, I'm the leader! Don't query me.");
+                    return;
+                }
+
+                // just a member here
+                loggerQuery.log("Member here. Working on the query after passing it on ...");
+
+                // offload to worker
                 worker.enqueueWork(incomingMessage);
-                return;
-            }
+            } else
+                loggerWarning.log("This query isn't for me, passing it on ...");
 
-            // do leader stuff as a leader
-            if (isMeLeader()) {
-                loggerQuery.log("Hey, I'm the leader! Don't query me.");
-                return;
-            }
-
-            // just a member here
-            loggerQuery.log("Member here. Working on the query after passing it on ...");
-            sendMessage(incomingMessage);  // pass on the query to others
-
-            // offload to worker
-            worker.enqueueWork(incomingMessage);
+            // pass on the query to others
+            sendMessage(incomingMessage);
 
             return;
         }

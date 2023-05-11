@@ -47,12 +47,12 @@ public class MessageProcessor {
     // qry message management
     // ----------------------------------------------------
     public static class Qry {
-        public static Route getMessage(String id, QueryType queryType, String data) {
+        public static Route getMessage(String id, QueryType queryType, String data, Integer portDestination) {
             String payload = MessageProcessor.Type.QRY.name() + "#" + id + "#" + queryType.name() + "#" + data;
             return Route.newBuilder()
                     .setId(0)
                     .setOrigin(Engine.getInstance().serverPort)
-                    .setDestination(0)
+                    .setDestination(portDestination)
                     .setPath("")
                     .setPayload(ByteString.copyFrom(payload.getBytes()))
                     .build();

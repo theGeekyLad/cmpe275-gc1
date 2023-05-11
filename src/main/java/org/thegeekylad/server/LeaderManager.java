@@ -28,17 +28,20 @@ public class LeaderManager {
         this.serverManager = serverManager;
     }
 
-    Route getNewQuery(QueryType queryType, String data) {
+    Route getNewQuery(QueryType queryType, String data, Integer portDestination) {
         String queryId = UUID.randomUUID().toString();
+        return getNewQuery(queryId, queryType, data, portDestination);
+    }
 
+    Route getNewQuery(String queryId, QueryType queryType, String data, Integer portDestination) {
         RecordQuery recordQuery = new RecordQuery(queryId, queryType, 0);
-        initiatedQueriesMap.put(queryId, recordQuery);
-        return MessageProcessor.Qry.getMessage(queryId, queryType, data);
+        initiatedQueriesMap.putIfAbsent(queryId, recordQuery);
+        return MessageProcessor.Qry.getMessage(queryId, queryType, data, portDestination);
     }
 
     void initLeader() {
         // initiate a server list query
-        serverManager.sendMessage(getNewQuery(QueryType.LST, ""));
+        serverManager.sendMessage(getNewQuery(QueryType.LST, "", 0));
     }
 
     // leader stuff - members, stay away
@@ -62,7 +65,7 @@ public class LeaderManager {
                 lstHandler.handleResponse();
 
                 // initiate a disk utilization query
-                serverManager.sendMessage(getNewQuery(QueryType.DSK, ""));
+                serverManager.sendMessage(getNewQuery(QueryType.DSK, "", 0));
 
                 postProcessingAfterResponse(incomingResponse);
             }
@@ -133,7 +136,9 @@ public class LeaderManager {
         File csvFile = new File(Constants.PATH_CSV_FILE + "/parking-violations.csv");
         String csvBytesString = Helper.csvToString(csvFile);
 
-        serverManager.sendMessage(getNewQuery(QueryType.ETL, csvBytesString));
+        String queryId = UUID.randomUUID().toString();  // all queries must use the same uuid
+        for (Integer portServer : lstHandler.setServers)
+            serverManager.sendMessage(getNewQuery(queryId, QueryType.ETL, csvBytesString, portServer));
     }
 
     // ----------------------------------------------------
