@@ -1,6 +1,7 @@
 package org.thegeekylad;
 
 import com.google.protobuf.ByteString;
+import gash.grpc.route.server.Engine;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import org.thegeekylad.util.ConsoleColors;
@@ -24,7 +25,8 @@ public class Router {
 	}
 
 	public void run(int linkPort, Route request) {
-		ch = ManagedChannelBuilder.forAddress("localhost", linkPort).usePlaintext().build();
+		System.out.println(Engine.getInstance().links.get(0).getIP());
+		ch = ManagedChannelBuilder.forAddress(Engine.getInstance().links.get(0).getServerName(), linkPort).usePlaintext().build();
 		RouteServiceGrpc.RouteServiceBlockingStub stub = RouteServiceGrpc.newBlockingStub(ch);
 
 		// blocking!

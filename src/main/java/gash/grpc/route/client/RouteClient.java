@@ -58,7 +58,7 @@ public class RouteClient {
 //	}
 
 //	public static void run(int linkPort, int destinationId, int I) {
-//		ManagedChannel ch = ManagedChannelBuilder.forAddress("localhost", linkPort).usePlaintext().build();
+//		ManagedChannel ch = ManagedChannelBuilder.forAddress(Engine.getInstance().serverName, linkPort).usePlaintext().build();
 //		RouteServiceGrpc.RouteServiceBlockingStub stub = RouteServiceGrpc.newBlockingStub(ch);
 //
 //		for (int i = 0; i < I; i++) {
@@ -75,7 +75,7 @@ public class RouteClient {
 //	}
 
 	public static void run(int linkPort, Route request) {
-		ManagedChannel ch = ManagedChannelBuilder.forAddress("localhost", linkPort).usePlaintext().build();
+		ManagedChannel ch = ManagedChannelBuilder.forAddress(Engine.getInstance().serverName, linkPort).usePlaintext().build();
 		RouteServiceGrpc.RouteServiceBlockingStub stub = RouteServiceGrpc.newBlockingStub(ch);
 
 		// blocking!

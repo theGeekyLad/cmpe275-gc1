@@ -50,13 +50,13 @@ public class Helper {
 
     public static String csvToString(File csvFile) {
         try {
-            StringBuilder stringBuilder = new StringBuilder();
+            String stringBuilder = new String();
 
             BufferedReader reader = new BufferedReader(new FileReader(csvFile));
             String line;
             while ((line = reader.readLine()) != null) {
-                stringBuilder.append(line);
-                stringBuilder.append(System.lineSeparator());
+                stringBuilder += (line);
+                stringBuilder += (System.lineSeparator());
             }
 
             return stringBuilder.toString();
@@ -70,7 +70,7 @@ public class Helper {
         byte[] bytes = csvBytesString.getBytes(StandardCharsets.ISO_8859_1);
         String csvContent = new String(bytes, StandardCharsets.UTF_8);
 
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile, true))) {
             writer.write(csvContent);
         } catch (IOException e) {
             e.printStackTrace();

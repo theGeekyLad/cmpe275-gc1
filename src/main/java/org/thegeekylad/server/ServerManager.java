@@ -73,6 +73,7 @@ public class ServerManager {
     // data
     // ----------------------------------------------------
     String[] csvRecords;  // only the part that needs to be used
+    String[] range;
     // ----------------------------------------------------
     Integer portLeader;
     Date dateLastSentElc;
@@ -212,7 +213,9 @@ public class ServerManager {
 
         myLogger.log("Inside manager.");
 
-        // TODO requestCount can be >= 2, even at the onset, if there are bombarding incoming requests
+        // TODO type something external - call processIncomingResponse() here
+
+        // type elc
         if (MessageProcessor.getType(incomingMessage).equals(MessageProcessor.Type.ELC.name())) {
 
             Date dateThisElc = getTimestamp(incomingMessage);
@@ -226,7 +229,14 @@ public class ServerManager {
 
             // this elc message was generated after mine was sent
             else if (dateThisElc.after(dateLastSentElc)) {
-                myLogger.log("Newer ELC. Dropping ...");
+                // is re-election
+                if (MessageProcessor.Elc.isReElection(incomingMessage)) {
+                    loggerWarning.log("Re-election initiated!");
+                    dateLastSentElc = new Date();
+                    countRequestsElc = 0;
+                    sendMessage(getElcMessage(incomingMessage, true, false));
+                } else
+                    myLogger.log("Newer ELC. Dropping ...");
                 // drop it
             }
 
@@ -237,12 +247,13 @@ public class ServerManager {
                 dateLastSentElc = dateThisElc;
                 countRequestsElc = 1;
 
-                sendMessage(getElcMessage(incomingMessage, true));
+                sendMessage(getElcMessage(incomingMessage, false, true));
             }
 
             // this elc is the same as the one initiated by me
             else {
                 myLogger.log("BINGO! Got back my ELC.");
+                myLogger.log(String.valueOf(countRequestsElc));
 
                 countRequestsElc++;
 
@@ -250,13 +261,18 @@ public class ServerManager {
                     case 1 -> {
                         // this is the first time you got an elc request: might be leader?
                         myLogger.log("First time. Spreading the word.");
-                        sendMessage(getElcMessage(incomingMessage, false));
+                        sendMessage(getElcMessage(incomingMessage, false, false));
                     }
                     case 2 -> {
                         // this is the second time
                         myLogger.log("Second time. Stopping everything. Leader has been elected.");
                         portLeader = getPort(incomingMessage);
                         loggerSuccess.log("Leader elected: " + portLeader);
+
+                        if (isMeLeader()) {  // log server count only if leader
+                            countServers = MessageProcessor.Elc.getCount(incomingMessage);
+                            loggerSuccess.log("Server count in ring = " + countServers);
+                        }
 
                         // start sending heartbeats
                         if (Helper.isDead(threadHbt))
@@ -267,11 +283,12 @@ public class ServerManager {
                             countRequestsElc++;
                         }
                         else
-                            sendMessage(getElcMessage(incomingMessage, false));  // pass on the update
+                            sendMessage(getElcMessage(incomingMessage, false, false));  // pass on the update
 
                         // as a leader, start working on stuff (query, etc.)
-                        if (isMeLeader())
+                        if (isMeLeader()) {
                             leaderManager.initLeader();
+                        }
                     }
 
                     // members do nothing
@@ -304,7 +321,8 @@ public class ServerManager {
 
                 // start re-election
                 loggerWarning.log("Starting re-election");
-                sendMessage(getElcMessage(null, true));  // "true" isn't relevant - can be false too
+                sendMessage(getElcMessage(null, true, true));
+                countRequestsElc = 0;
             } else {
                 loggerWarning.log("Passing it on.");
                 sendMessage(incomingMessage);  // not for me, just pass it on
@@ -315,7 +333,7 @@ public class ServerManager {
         // this is a query, offload to worker thread
         if (MessageProcessor.getType(incomingMessage).equals(MessageProcessor.Type.QRY.name())) {
 
-            loggerQuery.log("Query received.");
+            loggerQuery.log("Query received: " + MessageProcessor.Qry.getType(incomingMessage) + " : " + incomingMessage.getDestination());
 
             // do leader stuff as a leader
             if (isMeLeader()) {
@@ -448,7 +466,7 @@ public class ServerManager {
                 .build();
     }
 
-    public Route getElcMessage(Route incomingMessage, boolean mustCount) {
+    public Route getElcMessage(Route incomingMessage, boolean forceReElection, boolean mustCount) {
         Route.Builder msg = Route.newBuilder()
                 .setId(0)
                 .setOrigin(Engine.getInstance().serverPort)
@@ -471,6 +489,8 @@ public class ServerManager {
                                     .append("#")
                                     .append(Engine.getInstance().serverPort)
                                     .append("#")
+                                    .append(forceReElection)
+                                    .append("#")
                                     .append(1)
                                     .toString()
                                     .getBytes()
@@ -478,7 +498,7 @@ public class ServerManager {
             );
         } else {
             int incomingPriority = getPriority(incomingMessage);
-            int incomingServerCount = MessageProcessor.Elc.getCount(incomingMessage);
+            int incomingCount = MessageProcessor.Elc.getCount(incomingMessage);
 
             msg.setPayload(
                     ByteString.copyFrom(
@@ -491,7 +511,9 @@ public class ServerManager {
                                     .append("#")
                                     .append(myPriority > incomingPriority ? Engine.getInstance().serverPort : getPort(incomingMessage))
                                     .append("#")
-                                    .append(mustCount ? incomingServerCount + 1 : incomingServerCount)
+                                    .append(forceReElection)
+                                    .append("#")
+                                    .append(mustCount ? incomingCount + 1 : incomingCount)
                                     .toString()
                                     .getBytes()
                     )

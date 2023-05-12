@@ -8,7 +8,12 @@ import org.thegeekylad.util.constants.QueryType;
 import route.Route;
 
 import java.io.File;
+import java.text.SimpleDateFormat;
+import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
 import java.util.concurrent.LinkedBlockingDeque;
 
 public class Worker implements Runnable {
@@ -58,7 +63,7 @@ public class Worker implements Runnable {
             if (MessageProcessor.Qry.getType(msg).equals(QueryType.ETL.name())) {
                 serverManager.loggerWarning.log("Ingesting ETL data ...");
 
-                // commit to disk
+                // cache on disk
                 String csvBytesString = MessageProcessor.Qry.getData(msg);
                 File outputCsvFile = new File(Constants.PATH_CSV_FILE_OUTPUT + "/" + Engine.getInstance().serverPort + "-csv.csv");
                 Helper.stringToCsv(csvBytesString, outputCsvFile);
@@ -72,11 +77,13 @@ public class Worker implements Runnable {
             if (MessageProcessor.Qry.getType(msg).equals(QueryType.DST.name())) {
                 serverManager.loggerWarning.log("Saving my workable range ...");
 
-                String[] range = MessageProcessor.Qry.getData(msg).split("-");
+                serverManager.range = MessageProcessor.Qry.getData(msg).split("-");
 
                 File outputCsvFile = new File(Constants.PATH_CSV_FILE_OUTPUT + "/" + Engine.getInstance().serverPort + "-csv.csv");
                 String[] csvRecords = Helper.csvToString(outputCsvFile).split("\n");
-                serverManager.csvRecords = Arrays.copyOfRange(csvRecords, Integer.parseInt(range[0]), Integer.parseInt(range[1]) + 1);
+                serverManager.loggerWarning.log("Range: " + Arrays.toString(serverManager.range));
+                serverManager.loggerWarning.log("Length: " + csvRecords.length);
+                serverManager.csvRecords = Arrays.asList(csvRecords).subList(Integer.parseInt(serverManager.range[0]), Integer.parseInt(serverManager.range[1]) + 1).toArray(new String[] {});
 
                 serverManager.loggerWarning.log("\tSaved new data to work with!");
 
@@ -87,13 +94,31 @@ public class Worker implements Runnable {
 
             // this is a real query - look for data NOW !!!
             if (MessageProcessor.Qry.getType(msg).equals(QueryType.FND.name())) {
-                serverManager.loggerWarning.log("Real-world query. Searching ...");
+                try {
+                    serverManager.loggerWarning.log("Real-world query. Searching ...");
 
-                // TODO search in csv
+                    String payload = MessageProcessor.Qry.getData(msg);
+                    String[] findQueryParts = payload.split(":");
+                    Date dateFrom = new SimpleDateFormat("dd/MM/yyyy").parse(findQueryParts[0]);
+                    Date dateTo = new SimpleDateFormat("dd/MM/yyyy").parse(findQueryParts[1]);
 
-                serverManager.sendMessage(MessageProcessor.Res.getMessage(
-                        MessageProcessor.Qry.getId(msg),
-                        ""));
+                    List<String> lines = new ArrayList<>();
+                    serverManager.loggerWarning.log("Searching ...");
+
+                    // TODO end range is WRONG
+                    for (int i = Integer.parseInt(serverManager.range[0]); i < serverManager.csvRecords.length; i++) {
+                        Date dateRecord = new SimpleDateFormat("dd/MM/yyyy").parse(serverManager.csvRecords[i].split(",")[4]);
+                        if (dateRecord.equals(dateFrom) || dateRecord.equals(dateTo) || dateRecord.after(dateRecord) && dateRecord.before(dateTo))
+                            lines.add(serverManager.csvRecords[i]);
+                    }
+                    serverManager.loggerWarning.log("Search done.");
+
+                    serverManager.sendMessage(MessageProcessor.Res.getMessage(
+                            MessageProcessor.Qry.getId(msg),
+                            String.join("\n", lines)));
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
         }
         serverManager.loggerWarning.log("Worker stopped.");

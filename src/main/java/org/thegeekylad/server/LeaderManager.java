@@ -34,7 +34,7 @@ public class LeaderManager {
 
     Route getNewQuery(QueryType queryType, String data, Integer portDestination) {
         String queryId = UUID.randomUUID().toString();
-        return getNewQuery(queryId, queryType, data, portDestination);
+        return getNewQuery(queryId, queryType, data, portDestination == null ? 0 : portDestination);
     }
 
     Route getNewQuery(String queryId, QueryType queryType, String data, Integer portDestination) {
@@ -67,9 +67,6 @@ public class LeaderManager {
 
                 // list of servers received
                 lstHandler.handleResponse();
-
-                // set global server count
-                serverManager.countServers = lstHandler.setServers.size();
 
                 // initiate a cpu utilization query
                 serverManager.sendMessage(getNewQuery(QueryType.CPU, "", 0));
@@ -121,16 +118,28 @@ public class LeaderManager {
             }
         }
 
+        // response is for distribution query (usually the last)
+        if (queryType == QueryType.DST) {
+            serverManager.loggerLeader.log("Received a DST response: " + incomingResponse.getOrigin());
+            if (isLastResponse(recordQuery)) {
+                serverManager.loggerLeader.log("Got all DST responses!");
+
+                // TODO the first thing once the server is free
+                doRunSampleQuery();
+
+                postProcessingAfterResponse(incomingResponse);
+            }
+        }
+
         // response is for server list query
         if (queryType == QueryType.FND) {
             serverManager.loggerLeader.log("Received real-world response data from some server.");
-            fndHandler.addMoreCsvContent(Helper.stringBytesToString(MessageProcessor.Qry.getData(incomingResponse)));
+            serverManager.loggerLeader.log(MessageProcessor.getPayload(incomingResponse));
+            fndHandler.addMoreCsvContent(Helper.stringBytesToString(MessageProcessor.Res.getData(incomingResponse)));
             if (isLastResponse(recordQuery)) {
 
                 // all response data from all servers received
                 fndHandler.handleResponse();
-
-                // TODO send this data back to the client
 
                 postProcessingAfterResponse(incomingResponse);
             }
@@ -177,17 +186,36 @@ public class LeaderManager {
 
         // TODO there's actually no csv file stored locally - everything comes form an external agent
         File csvFile = new File(Constants.PATH_CSV_FILE + "/parking-violations.csv");
+        serverManager.loggerWarning.log("Reading big CSV ...");
         csvText = Helper.csvToString(csvFile);  // cache csv in memory - biiiiig data!!
+        serverManager.loggerWarning.log("CSV read done.");
         String csvBytesString = Helper.stringToStringBytes(csvText);
 
+        // cache on disk on leader as well - what if tomorrow this leader becomes a member?
+        File outputCsvFile = new File(Constants.PATH_CSV_FILE_OUTPUT + "/" + Engine.getInstance().serverPort + "-csv.csv");
+        Helper.stringToCsv(csvBytesString, outputCsvFile);
+
+        // cache in memory for leader as well
+//        serverManager.csvRecordsList.addAll(Arrays.asList(Helper.stringBytesToString(csvBytesString).split("\n")));
+
         String queryId = UUID.randomUUID().toString();  // all queries must use the same uuid
-        for (Integer portServer : lstHandler.setServers)
+        for (Integer portServer : lstHandler.setServers) {
             // TODO replication is okay but how much of data will each server process?
+            serverManager.loggerWarning.log("Sending ETL streams to other nodes ...");
             serverManager.sendMessage(getNewQuery(queryId, QueryType.ETL, csvBytesString, portServer));
+        }
     }
 
     void doDistribution() {
         serverManager.loggerLeader.log("Init DST ...");
+
+        // that's because this node was elected as leader in re-election
+        File outputCsvFile = new File(Constants.PATH_CSV_FILE_OUTPUT + "/" + Engine.getInstance().serverPort + "-csv.csv");
+        if (csvText == null) {
+            serverManager.loggerWarning.log("Reading big CSV ...");
+            csvText = Helper.csvToString(outputCsvFile);
+            serverManager.loggerWarning.log("CSV read done.");
+        }
 
         String[] countCsvRecords = csvText.trim().split("\n");
         LinkedBlockingDeque<String> queueCsvRecords = new LinkedBlockingDeque<>(Arrays.asList(countCsvRecords));
@@ -229,6 +257,12 @@ public class LeaderManager {
 
             serverManager.sendMessage(getNewQuery(queryId, QueryType.DST, range, portServer));
         }
+    }
+
+    void doRunSampleQuery() {
+        serverManager.loggerLeader.log("Ran a sample query. Lets see how this goes ...");
+        String payload = "01/01/2018:01/03/2018:";
+        serverManager.sendMessage(getNewQuery(QueryType.FND, payload, null));
     }
 
     private String getCsvStringForRange(LinkedBlockingDeque<String> queueCsvRecords, int count) {

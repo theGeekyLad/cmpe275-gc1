@@ -113,7 +113,7 @@ public class RouteServerImpl extends RouteServiceImplBase {
 				start();
 
 				// new server, send ELC
-				manager.sendMessage(manager.getElcMessage(null, true));  // "true" isn't relevant - can be false too
+				manager.sendMessage(manager.getElcMessage(null, false, true));
 
 				blockUntilShutdown();
 			}

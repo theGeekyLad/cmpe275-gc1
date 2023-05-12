@@ -22,9 +22,14 @@ public class MessageProcessor {
     // elc message management
     // ----------------------------------------------------
     public static class Elc {
+        public static boolean isReElection(Route msg) {
+            String payload = getPayload(msg);
+            return Boolean.parseBoolean(payload.split("#")[4]);
+        }
+
         public static int getCount(Route msg) {
             String payload = getPayload(msg);
-            return Integer.parseInt(payload.split("#")[4]);
+            return Integer.parseInt(payload.split("#")[5]);
         }
     }
 
@@ -84,8 +89,12 @@ public class MessageProcessor {
         }
 
         public static String getData(Route msg) {
-            String payload = getPayload(msg);
-            return payload.split("#")[2];
+            try {
+                String payload = getPayload(msg);
+                return payload.split("#")[2];
+            } catch (Exception e) {
+                return "";
+            }
         }
 
         public static Route getMessage(String queryId, String data) {

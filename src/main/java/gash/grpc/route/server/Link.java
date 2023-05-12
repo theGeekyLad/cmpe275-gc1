@@ -4,7 +4,7 @@ public class Link {
 	private String serverName;
 	private int serverID;
 	private int port;
-	private String IP = "127.0.0.1";
+	private String IP;
 
 	private long created;
 	private long lastCheck;
