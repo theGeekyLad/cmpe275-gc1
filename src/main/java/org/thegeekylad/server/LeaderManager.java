@@ -1,5 +1,6 @@
 package org.thegeekylad.server;
 
+import gash.grpc.route.server.Engine;
 import org.thegeekylad.model.RecordQuery;
 import org.thegeekylad.server.processor.MessageProcessor;
 import org.thegeekylad.util.Helper;
@@ -9,6 +10,7 @@ import route.Route;
 
 import java.io.File;
 import java.util.*;
+import java.util.concurrent.LinkedBlockingDeque;
 
 public class LeaderManager {
     // ----------------------------------------------------
@@ -19,10 +21,12 @@ public class LeaderManager {
     // handlers
     // ----------------------------------------------------
     LstHandler lstHandler = new LstHandler();
-    DskHandler dskHandler = new DskHandler();
+    CpuHandler cpuHandler = new CpuHandler();
     EtlHandler etlHandler = new EtlHandler();
+    FndHandler fndHandler = new FndHandler();
     // ----------------------------------------------------
     ServerManager serverManager;
+    String csvText;  // huge data loaded onto memory
 
     public LeaderManager(ServerManager serverManager) {
         this.serverManager = serverManager;
@@ -64,8 +68,11 @@ public class LeaderManager {
                 // list of servers received
                 lstHandler.handleResponse();
 
-                // initiate a disk utilization query
-                serverManager.sendMessage(getNewQuery(QueryType.DSK, "", 0));
+                // set global server count
+                serverManager.countServers = lstHandler.setServers.size();
+
+                // initiate a cpu utilization query
+                serverManager.sendMessage(getNewQuery(QueryType.CPU, "", 0));
 
                 postProcessingAfterResponse(incomingResponse);
             }
@@ -73,17 +80,24 @@ public class LeaderManager {
             return;
         }
 
-        // response is for disk space query
-        if (queryType == QueryType.DSK) {
-            serverManager.loggerLeader.log("Received a disk space response.");
-            dskHandler.diskUsageMap.put((int) incomingResponse.getOrigin(), Integer.parseInt(MessageProcessor.Res.getData(incomingResponse)));
+        // response is for free cpu query
+        if (queryType == QueryType.CPU) {
+            serverManager.loggerLeader.log("Received a CPU utilization response.");
+            cpuHandler.freeCpuMap.put((int) incomingResponse.getOrigin(), Integer.parseInt(MessageProcessor.Res.getData(incomingResponse)));
             if (isLastResponse(recordQuery)) {
 
-                // servers' disk utilization received
-                dskHandler.handleResponse();
+                // servers' cpu utilization received
+                cpuHandler.handleResponse();
 
-                // time for etl
-                doEtl();
+                File outputCsvFile = new File(Constants.PATH_CSV_FILE_OUTPUT + "/" + Engine.getInstance().serverPort + "-csv.csv");
+                if (outputCsvFile.exists()) {
+                    // this is a re-election - data is already everywhere - skip etl, stay smart
+                    serverManager.loggerLeader.log("Skipping ETL since data is already everywhere. Redistributing though ...");
+                    doDistribution();
+                }
+                else
+                    // time for etl
+                    doEtl();
 
                 postProcessingAfterResponse(incomingResponse);
             }
@@ -93,15 +107,44 @@ public class LeaderManager {
 
         // response is for etl query
         if (queryType == QueryType.ETL) {
-            serverManager.loggerLeader.log("Received a ETL response.");
+            serverManager.loggerLeader.log("Received a ETL response: " + incomingResponse.getOrigin());
             if (isLastResponse(recordQuery)) {
                 serverManager.loggerLeader.log("Got all ETL responses!");
 
-                // servers' disk utilization received
+                // servers' cpu utilization received
                 etlHandler.handleResponse();
+
+                // tell everyone how much of data they'd work on
+                doDistribution();
 
                 postProcessingAfterResponse(incomingResponse);
             }
+        }
+
+        // response is for server list query
+        if (queryType == QueryType.FND) {
+            serverManager.loggerLeader.log("Received real-world response data from some server.");
+            fndHandler.addMoreCsvContent(Helper.stringBytesToString(MessageProcessor.Qry.getData(incomingResponse)));
+            if (isLastResponse(recordQuery)) {
+
+                // all response data from all servers received
+                fndHandler.handleResponse();
+
+                // TODO send this data back to the client
+
+                postProcessingAfterResponse(incomingResponse);
+            }
+
+            return;
+        }
+
+        // "request" is from external source
+        if (queryType == QueryType.EXT) {
+            serverManager.loggerLeader.log("Received real-world request. Buckle up, lets go ...");
+
+            // TODO process this real-world request
+
+            return;
         }
     }
 
@@ -134,11 +177,65 @@ public class LeaderManager {
 
         // TODO there's actually no csv file stored locally - everything comes form an external agent
         File csvFile = new File(Constants.PATH_CSV_FILE + "/parking-violations.csv");
-        String csvBytesString = Helper.csvToString(csvFile);
+        csvText = Helper.csvToString(csvFile);  // cache csv in memory - biiiiig data!!
+        String csvBytesString = Helper.stringToStringBytes(csvText);
 
         String queryId = UUID.randomUUID().toString();  // all queries must use the same uuid
         for (Integer portServer : lstHandler.setServers)
+            // TODO replication is okay but how much of data will each server process?
             serverManager.sendMessage(getNewQuery(queryId, QueryType.ETL, csvBytesString, portServer));
+    }
+
+    void doDistribution() {
+        serverManager.loggerLeader.log("Init DST ...");
+
+        String[] countCsvRecords = csvText.trim().split("\n");
+        LinkedBlockingDeque<String> queueCsvRecords = new LinkedBlockingDeque<>(Arrays.asList(countCsvRecords));
+
+        int countTotalCores = 0;
+        for (Map.Entry<Integer, Integer> cpuInfoEntry : cpuHandler.freeCpuMap.entrySet()) {
+            int countCores = cpuInfoEntry.getValue();
+
+            countTotalCores += countCores;
+        }
+
+        int[] recordsPerServer = new int[cpuHandler.freeCpuMap.size()];
+        int i = 0, countCsvRecordsVisited = 0;
+        for (Map.Entry<Integer, Integer> cpuInfoEntry : cpuHandler.freeCpuMap.entrySet()) {
+            int countCores = cpuInfoEntry.getValue();
+
+            int r = (int) ((countCores * 1.0 / countTotalCores) * countCsvRecords.length);
+            countCsvRecordsVisited += r;
+
+            recordsPerServer[i++] = r;
+        }
+        int d = countCsvRecords.length - countCsvRecordsVisited;
+        recordsPerServer[0] += d;
+
+        serverManager.loggerLeader.log("Total CSV records: " + countCsvRecords.length);
+        serverManager.loggerLeader.log("Total CSV records touched: " + countCsvRecordsVisited);
+
+        i = 0;
+        countCsvRecordsVisited = 0;
+        String queryId = UUID.randomUUID().toString();  // all queries must use the same uuid
+        for (Integer portServer : lstHandler.setServers) {
+            String range = countCsvRecordsVisited + "-";
+            countCsvRecordsVisited += recordsPerServer[i++] - 1;
+            range += countCsvRecordsVisited;
+
+            countCsvRecordsVisited++;
+
+            serverManager.loggerLeader.log("\tAllocating to " + portServer + ": " + range);
+
+            serverManager.sendMessage(getNewQuery(queryId, QueryType.DST, range, portServer));
+        }
+    }
+
+    private String getCsvStringForRange(LinkedBlockingDeque<String> queueCsvRecords, int count) {
+        StringBuilder csvText = new StringBuilder();
+        for (int i = 0; i < count; i++)
+            csvText.append(queueCsvRecords.pollFirst()).append("\n");
+        return csvText.toString();
     }
 
     // ----------------------------------------------------
@@ -150,20 +247,20 @@ public class LeaderManager {
         void handleResponse() {
             serverManager.loggerLeader.log("Discovered these servers in the ring:");
             for (Integer server : setServers)
-                serverManager.loggerLeader.log(server + ":");
+                serverManager.loggerLeader.log(String.valueOf(server));
         }
     }
 
     // ----------------------------------------------------
-    // dsk case handler
+    // cpu case handler
     // ----------------------------------------------------
-    class DskHandler {
-        Map<Integer, Integer> diskUsageMap = new HashMap<>();
+    class CpuHandler {
+        Map<Integer, Integer> freeCpuMap = new HashMap<>();
 
         void handleResponse() {
-            serverManager.loggerLeader.log("Here is the individual server disk utilization info:");
-            for (Map.Entry<Integer, Integer> entry : diskUsageMap.entrySet())
-                serverManager.loggerLeader.log(entry.getKey() + ": " + entry.getValue() + "GB free.");
+            serverManager.loggerLeader.log("Here is the core count info:");
+            for (Map.Entry<Integer, Integer> entry : freeCpuMap.entrySet())
+                serverManager.loggerLeader.log(entry.getKey() + ": " + entry.getValue() + " cores.");
         }
     }
 
@@ -173,6 +270,19 @@ public class LeaderManager {
     class EtlHandler {
         void handleResponse() {
             serverManager.loggerLeader.log("ETL fulfilled. Good show");
+        }
+    }
+
+    // ----------------------------------------------------
+    // fnd case handler
+    // ----------------------------------------------------
+    class FndHandler {
+        String csvString = "";
+        void addMoreCsvContent(String csvString) {
+            this.csvString += "\n" + csvString;
+        }
+        void handleResponse() {
+            serverManager.loggerLeader.log("Real-world query fulfilled. Good show");
         }
     }
 }

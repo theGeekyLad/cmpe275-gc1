@@ -26,6 +26,28 @@ public class Helper {
         return thread == null || !thread.isAlive();
     }
 
+    public static String csvToStringBytes(File csvFile) {
+        String csvString = csvToString(csvFile);
+        if (csvString == null) return null;
+
+        byte[] bytes = csvString.getBytes(StandardCharsets.UTF_8);
+        return new String(bytes, StandardCharsets.ISO_8859_1);
+    }
+
+    public static String stringToStringBytes(String csvString) {
+        if (csvString == null) return null;
+
+        byte[] bytes = csvString.getBytes(StandardCharsets.UTF_8);
+        return new String(bytes, StandardCharsets.ISO_8859_1);
+    }
+
+    public static String stringBytesToString(String csvStringBytes) {
+        if (csvStringBytes == null) return null;
+
+        byte[] bytes = csvStringBytes.getBytes(StandardCharsets.ISO_8859_1);
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
     public static String csvToString(File csvFile) {
         try {
             StringBuilder stringBuilder = new StringBuilder();
@@ -37,10 +59,7 @@ public class Helper {
                 stringBuilder.append(System.lineSeparator());
             }
 
-            String csvString = stringBuilder.toString();
-            byte[] bytes = csvString.getBytes(StandardCharsets.UTF_8);
-
-            return new String(bytes, StandardCharsets.ISO_8859_1);
+            return stringBuilder.toString();
         } catch (IOException e) {
             e.printStackTrace();
         }

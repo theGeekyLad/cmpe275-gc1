@@ -14,6 +14,7 @@ import org.thegeekylad.util.constants.Constants;
 import org.thegeekylad.util.constants.QueryType;
 import route.Route;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.LinkedBlockingDeque;
@@ -69,10 +70,15 @@ public class ServerManager {
     final LinkedBlockingDeque<Route> queueElcMessages = new LinkedBlockingDeque<>();
     final LinkedBlockingDeque<Route> queueMessages = new LinkedBlockingDeque<>();
     // ----------------------------------------------------
+    // data
+    // ----------------------------------------------------
+    String[] csvRecords;  // only the part that needs to be used
+    // ----------------------------------------------------
     Integer portLeader;
     Date dateLastSentElc;
     RouteServerImpl routeServer;
     int serverPriority;  // TODO make something more meaningful
+    boolean elcInitiator;
     // ----------------------------------------------------
 
     public ServerManager() {
@@ -84,6 +90,10 @@ public class ServerManager {
         loggerHbt = new MyLogger(getClass().getName(), ConsoleColors.YELLOW);
 
         serverPriority = new Random().nextInt(10);
+
+        // delete old cached csv data
+        File outputCsvFile = new File(Constants.PATH_CSV_FILE_OUTPUT + "/" + Engine.getInstance().serverPort + "-csv.csv");
+        outputCsvFile.delete();
 
         myLogger.log("Service manager created. Priority: " + serverPriority);
     }
@@ -192,13 +202,8 @@ public class ServerManager {
         return serverPriority;  // TODO make server priority score meaningful
     }
 
-    public long getDiskFreeSpace() {
-        try {
-            return FileSystemUtils.freeSpaceKb("/") / 1024 / 1024;  // gb
-        } catch (IOException e) {
-            loggerError.log("Cannot query free space.");
-            return 0;
-        }
+    public long getFreeCpuInfo() {
+        return Runtime.getRuntime().availableProcessors();
     }
 
     public void processIncomingMessage(Route incomingMessage) {
@@ -209,6 +214,7 @@ public class ServerManager {
 
         // TODO requestCount can be >= 2, even at the onset, if there are bombarding incoming requests
         if (MessageProcessor.getType(incomingMessage).equals(MessageProcessor.Type.ELC.name())) {
+
             Date dateThisElc = getTimestamp(incomingMessage);
 
             // this elc message came in before my first was even sent (super rare)
@@ -251,19 +257,17 @@ public class ServerManager {
                         myLogger.log("Second time. Stopping everything. Leader has been elected.");
                         portLeader = getPort(incomingMessage);
                         loggerSuccess.log("Leader elected: " + portLeader);
-                        if (isMeLeader()) {  // log server count only if leader
-                            countServers = MessageProcessor.Elc.getCount(incomingMessage);
-                            loggerSuccess.log("Server count in ring = " + countServers);
-                        }
 
                         // start sending heartbeats
                         if (Helper.isDead(threadHbt))
                             (threadHbt = new Thread(this::startSendingHeartbeats)).start();
-                        if (incomingMessage.getOrigin() == Engine.getInstance().serverPort)
+
+                        if (incomingMessage.getOrigin() == Engine.getInstance().serverPort) {
                             myLogger.log("Back at me. I started everything. Stopping.");
+                            countRequestsElc++;
+                        }
                         else
                             sendMessage(getElcMessage(incomingMessage, false));  // pass on the update
-
 
                         // as a leader, start working on stuff (query, etc.)
                         if (isMeLeader())
@@ -297,6 +301,10 @@ public class ServerManager {
             if (link.getPort() == getRngOldPort(incomingMessage)) {
                 loggerWarning.log("Ring restoration request is for me. Replacing link ...");
                 link.setPort((int) incomingMessage.getOrigin());
+
+                // start re-election
+                loggerWarning.log("Starting re-election");
+                sendMessage(getElcMessage(null, true));  // "true" isn't relevant - can be false too
             } else {
                 loggerWarning.log("Passing it on.");
                 sendMessage(incomingMessage);  // not for me, just pass it on
@@ -309,24 +317,22 @@ public class ServerManager {
 
             loggerQuery.log("Query received.");
 
+            // do leader stuff as a leader
+            if (isMeLeader()) {
+                loggerQuery.log("Hey, I'm the leader! Don't query me.");
+                return;
+            }
+
             // do something only if this query is for me or generic "0"
             if (incomingMessage.getDestination() == 0 || incomingMessage.getDestination() == Engine.getInstance().serverPort) {
 
-                // etl queries to be offloaded without a thought
-                if (MessageProcessor.Qry.getType(incomingMessage).equals(QueryType.ETL.name())) {
-                    loggerWarning.log("ETL type of query.");
+                // etl or dst queries to be offloaded without a thought
+                if (MessageProcessor.Qry.getType(incomingMessage).equals(QueryType.ETL.name())
+                        || MessageProcessor.Qry.getType(incomingMessage).equals(QueryType.DST.name())) {
+                    loggerWarning.log("ETL / DST type of query.");
                     worker.enqueueWork(incomingMessage);
                     return;
                 }
-
-                // do leader stuff as a leader
-                if (isMeLeader()) {
-                    loggerQuery.log("Hey, I'm the leader! Don't query me.");
-                    return;
-                }
-
-                // just a member here
-                loggerQuery.log("Member here. Working on the query after passing it on ...");
 
                 // offload to worker
                 worker.enqueueWork(incomingMessage);
@@ -453,6 +459,7 @@ public class ServerManager {
 
         if (incomingMessage == null) {
             myLogger.log("Sending ELC before hearing from anyone! Let's go.");
+//            elcInitiator = true;
             msg.setPayload(
                     ByteString.copyFrom(
                             new StringBuilder()

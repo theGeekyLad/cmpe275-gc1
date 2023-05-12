@@ -8,6 +8,7 @@ import org.thegeekylad.util.constants.QueryType;
 import route.Route;
 
 import java.io.File;
+import java.util.Arrays;
 import java.util.concurrent.LinkedBlockingDeque;
 
 public class Worker implements Runnable {
@@ -44,12 +45,12 @@ public class Worker implements Runnable {
                 return;
             }
 
-            // this is a disk space query request - serve it
-            if (MessageProcessor.Qry.getType(msg).equals(QueryType.DSK.name())) {
-                serverManager.loggerResponse.log("Response for DSK built. Enqueueing send ...");
+            // this is a cpu utilization query request - serve it
+            if (MessageProcessor.Qry.getType(msg).equals(QueryType.CPU.name())) {
+                serverManager.loggerResponse.log("Response for CPU built. Enqueueing send ...");
                 serverManager.sendMessage(MessageProcessor.Res.getMessage(
                         MessageProcessor.Qry.getId(msg),
-                        String.valueOf(serverManager.getDiskFreeSpace())));
+                        String.valueOf(serverManager.getFreeCpuInfo())));
                 return;
             }
 
@@ -64,7 +65,35 @@ public class Worker implements Runnable {
 
                 serverManager.sendMessage(MessageProcessor.Res.getMessage(
                         MessageProcessor.Qry.getId(msg),
-                        String.valueOf(serverManager.getDiskFreeSpace())));
+                        ""));
+            }
+
+            // this is a dst request - save the range
+            if (MessageProcessor.Qry.getType(msg).equals(QueryType.DST.name())) {
+                serverManager.loggerWarning.log("Saving my workable range ...");
+
+                String[] range = MessageProcessor.Qry.getData(msg).split("-");
+
+                File outputCsvFile = new File(Constants.PATH_CSV_FILE_OUTPUT + "/" + Engine.getInstance().serverPort + "-csv.csv");
+                String[] csvRecords = Helper.csvToString(outputCsvFile).split("\n");
+                serverManager.csvRecords = Arrays.copyOfRange(csvRecords, Integer.parseInt(range[0]), Integer.parseInt(range[1]) + 1);
+
+                serverManager.loggerWarning.log("\tSaved new data to work with!");
+
+                serverManager.sendMessage(MessageProcessor.Res.getMessage(
+                        MessageProcessor.Qry.getId(msg),
+                        String.valueOf(serverManager.getFreeCpuInfo())));
+            }
+
+            // this is a real query - look for data NOW !!!
+            if (MessageProcessor.Qry.getType(msg).equals(QueryType.FND.name())) {
+                serverManager.loggerWarning.log("Real-world query. Searching ...");
+
+                // TODO search in csv
+
+                serverManager.sendMessage(MessageProcessor.Res.getMessage(
+                        MessageProcessor.Qry.getId(msg),
+                        ""));
             }
         }
         serverManager.loggerWarning.log("Worker stopped.");
